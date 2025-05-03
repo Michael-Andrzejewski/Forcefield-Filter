@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Forcefield</title>
+  <style>
+    body {
+      width: 250px;
+      padding: 10px;
+      font-family: sans-serif;
+    }
+    #inputContainer {
+      display: flex;
+      margin-bottom: 10px;
+    }
+    #wordInput {
+      flex-grow: 1;
+      margin-right: 5px;
+    }
+    #blockList {
+      margin-top: 10px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+    }
+    .tag {
+      background-color: #eee;
+      padding: 2px 8px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      font-size: 0.9em;
+    }
+    .tag span {
+      margin-right: 5px;
+    }
+    .tag button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 1.1em;
+      padding: 0 0 0 5px;
+      line-height: 1;
+      color: #999;
+    }
+    .tag button:hover {
+      color: #333;
+    }
+    #actionButtonContainer {
+      text-align: center;
+      margin-top: 15px;
+      border-top: 1px solid #ccc;
+      padding-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="inputContainer">
+    <input type="text" id="wordInput" placeholder="Add word or phrase">
+    <button id="addButton">Add</button>
+  </div>
+  <div id="blockList"></div>
+
+  <div id="actionButtonContainer">
+    <button id="blockButton">Block Content on Page</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html> 
