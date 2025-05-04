@@ -29,7 +29,7 @@ blockButton.addEventListener('click', () => {
         chrome.scripting.executeScript({
           target: { tabId: tabs[0].id },
           func: injectContentScript,
-          args: [blockList] // Pass the blocklist as an argument
+          args: [blockList] // Pass the blocklist (now array of objects)
         }).catch(err => console.error("Error injecting script: ", err));
       } else {
         console.error("Could not get active tab ID.");
@@ -47,16 +47,33 @@ function loadBlockList() {
 
 function displayBlockList(list) {
   blockListDiv.innerHTML = ''; // Clear current list
-  list.forEach((word, index) => {
+  list.forEach((item, index) => { // Item is now { text: '...', level: ... }
     const tag = document.createElement('span');
     tag.className = 'tag';
 
     const text = document.createElement('span');
-    text.textContent = word;
+    text.textContent = item.text; // Use item.text
     tag.appendChild(text);
 
+    // Create number input for level
+    const levelInput = document.createElement('input');
+    levelInput.type = 'number';
+    levelInput.value = item.level; // Use item.level
+    levelInput.min = 0;
+    levelInput.max = 100;
+    levelInput.title = 'Parent levels to hide';
+    levelInput.addEventListener('change', (e) => updateLevel(index, parseInt(e.target.value, 10)));
+    levelInput.addEventListener('input', (e) => {
+        // Optional: Clamp value immediately on input if needed, though 'change' is usually sufficient
+        let value = parseInt(e.target.value, 10);
+        if (isNaN(value)) value = 0; // Default to 0 if invalid
+        if (value < 0) e.target.value = 0;
+        if (value > 100) e.target.value = 100;
+    });
+    tag.appendChild(levelInput);
+
     const removeButton = document.createElement('button');
-    removeButton.textContent = '×'; // Use '×' for close symbol
+    removeButton.textContent = 'x';
     removeButton.title = 'Remove'; // Add tooltip
     removeButton.addEventListener('click', () => removeWord(index));
     tag.appendChild(removeButton);
@@ -70,10 +87,12 @@ function addWord() {
   if (word) {
     chrome.storage.sync.get(['blockList'], (result) => {
       const blockList = result.blockList || [];
-      if (!blockList.includes(word)) { // Avoid duplicates
-        blockList.push(word);
+      // Check if the word (text property) already exists
+      if (!blockList.some(item => item.text === word)) {
+        // Add as an object with default level 1
+        blockList.push({ text: word, level: 1 });
         chrome.storage.sync.set({ blockList }, () => {
-          console.log(`Added "${word}" to blocklist.`);
+          console.log(`Added "${word}" (level 1) to blocklist.`);
           displayBlockList(blockList); // Update display
           wordInput.value = ''; // Clear input
         });
@@ -88,108 +107,108 @@ function addWord() {
 function removeWord(indexToRemove) {
   chrome.storage.sync.get(['blockList'], (result) => {
     const blockList = result.blockList || [];
-    const removedWord = blockList.splice(indexToRemove, 1)[0]; // Remove word at index
+    const removedItem = blockList.splice(indexToRemove, 1)[0]; // Remove item at index
     chrome.storage.sync.set({ blockList }, () => {
-      console.log(`Removed "${removedWord}" from blocklist.`);
+      console.log(`Removed "${removedItem.text}" from blocklist.`);
       displayBlockList(blockList); // Update display
     });
   });
 }
 
+// New function to update the level of a specific item
+function updateLevel(index, newLevel) {
+    if (isNaN(newLevel) || newLevel < 0 || newLevel > 100) {
+        console.error("Invalid level provided. Must be between 0 and 100.");
+        // Optionally, reset the input visually here if the browser didn't clamp it
+        loadBlockList(); // Reload to reset the view if clamping fails
+        return;
+    }
+    chrome.storage.sync.get(['blockList'], (result) => {
+        const blockList = result.blockList || [];
+        if (blockList[index]) {
+            blockList[index].level = newLevel;
+            chrome.storage.sync.set({ blockList }, () => {
+                console.log(`Updated level for "${blockList[index].text}" to ${newLevel}.`);
+                // No need to call displayBlockList again, the input value is already updated visually.
+                // However, if clamping failed, a reload might be needed.
+            });
+        } else {
+            console.error("Attempted to update level for non-existent item at index:", index);
+        }
+    });
+}
+
 // This function will be injected into the content page
-// It needs to be self-contained or rely on functions defined within it.
-function injectContentScript(blockListToUse) {
-    console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse);
+function injectContentScript(blockListToUse) { // blockListToUse is [{text: '...', level: ...}]
+    // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse); // Less verbose
 
     function blockListedContent(blockList) {
         console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases.`);
-        // First, unhide previously hidden elements to reflect the new list accurately? (Optional but potentially better UX)
-        // Or maybe better: store originally hidden elements and only re-hide based on the *new* list?
-        // For simplicity now, let's just re-run the hiding logic. Existing hidden elements will remain hidden if they still match.
-        // Elements that *no longer* match won't be explicitly unhidden by this simple version.
-
         const allElements = document.body.getElementsByTagName('*');
         let elementsHidden = 0;
+        const hiddenMarker = 'hiddenByForcefield'; // Use a constant for the dataset key
 
-        // Iterate backwards to avoid issues with indices changing
+        // Iterate backwards through all elements
         for (let i = allElements.length - 1; i >= 0; i--) {
             const element = allElements[i];
 
-            // Basic check if element might contain text and isn't hidden itself
-            // Check if the element *itself* is hidden. If so, skip.
-            // We want to check content even if a parent is hidden, in case the parent hiding changes.
-             if (element.style.display === 'none' && element.dataset.hiddenByForcefield !== 'true') {
-                 // If it's hidden but not by us, leave it alone.
+            // Skip elements that are already hidden by means other than this script
+            if (element.style.display === 'none' && !element.dataset[hiddenMarker]) {
                 continue;
             }
-             if (!element.textContent) {
-                  continue; // Skip elements with no text content at all
-             }
+            // Skip elements without any text content
+            if (!element.textContent || !element.textContent.trim()) {
+                 continue;
+            }
 
-
-            // Reset our specific hidden marker if it exists (needed if words are removed from blocklist)
-            // This is getting complex, maybe a simpler approach is better for now.
-            // Let's stick to just re-hiding for now.
-            // if (element.dataset.hiddenByForcefield) {
-            //     element.style.display = ''; // Reset display
-            //     delete element.dataset.hiddenByForcefield;
-            // }
-
-
-            // Check if it's a potential 'leaf node' (no element children, has trimmed text)
-             // Consider elements that might have text even with children, but prioritize leaves
-            if (element.children.length === 0 && element.textContent.trim()) {
+            // --- Focus on potential leaf nodes for checking --- 
+            if (element.children.length === 0) {
                 const text = element.textContent.toLowerCase();
 
-                 // Check against each word/phrase in the blocklist
-                let foundMatch = false;
-                for (const blockedWord of blockList) {
-                    if (text.includes(blockedWord.toLowerCase())) {
-                        foundMatch = true;
-                        break; // Found a match, no need to check further for this element
+                // Check if text contains any blocked word/phrase
+                let foundMatch = null;
+                for (const item of blockList) {
+                    if (text.includes(item.text.toLowerCase())) {
+                        foundMatch = item;
+                        break;
                     }
                 }
 
                 if (foundMatch) {
-                    // Find a suitable parent element to hide
-                    let containerToHide = element.parentElement;
-                    // console.log(`[Forcefield] Found blocked content in leaf node:`, element); // Less verbose logging
+                    const levelsToAscend = foundMatch.level;
 
-                    // Hide the parent element if it exists and isn't already hidden by us
-                    // We check containerToHide.style.display !== 'none' OR if it was hidden by us previously
-                    if (containerToHide && (containerToHide.style.display !== 'none' || containerToHide.dataset.hiddenByForcefield === 'true')) {
-                        if (containerToHide === document.body || containerToHide === document.documentElement) {
-                            console.warn("[Forcefield] Attempted to hide BODY or HTML element. Skipping.", element);
-                            continue; // Don't hide body/html
+                    // Find the target element by ascending the DOM
+                    let elementToHide = element;
+                    for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
+                        elementToHide = elementToHide.parentElement;
+                    }
+
+                    // Check if the target is valid and not already hidden by this script
+                    if (elementToHide && elementToHide.style.display !== 'none') {
+                        // Prevent hiding the entire body or html elements
+                        if (elementToHide === document.body || elementToHide === document.documentElement) {
+                            console.warn(`[Forcefield] Avoided hiding BODY/HTML for "${foundMatch.text}".`);
+                            continue;
                         }
 
-                         // Check if already hidden *by this script* to avoid redundant logging/action
-                         if (containerToHide.style.display !== 'none') {
-                             console.log(`[Forcefield] Hiding parent element:`, containerToHide);
-                             containerToHide.style.display = 'none';
-                             containerToHide.dataset.hiddenByForcefield = 'true'; // Mark as hidden by us
-                             elementsHidden++;
-                         }
-
-                    } else if (!containerToHide) {
-                        // console.warn("[Forcefield] Leaf node found but has no parent element.", element); // Less verbose
-                    } else {
-                        // Parent is already hidden, potentially by other means or previous run
+                        // Hide the element and mark it
+                        // console.log(`[Forcefield] Hiding element (level ${levelsToAscend} ancestor) for "${foundMatch.text}":`, elementToHide); // Less verbose
+                        elementToHide.style.display = 'none';
+                        elementToHide.dataset[hiddenMarker] = 'true';
+                        elementsHidden++;
                     }
                 }
-                 // Experimental: If a leaf node *doesn't* match anymore, should we unhide its parent?
-                 // This requires tracking what was hidden. Let's skip for now.
-
             }
-             // Simplified: Don't check non-leaf nodes for now to avoid hiding large sections unintentionally.
         }
-        console.log(`[Forcefield] Scan finished. Hid ${elementsHidden} new parent elements in this run.`);
+        if (elementsHidden > 0) {
+            console.log(`[Forcefield] Scan finished. Hid ${elementsHidden} elements/ancestors.`);
+        } else {
+            console.log(`[Forcefield] Scan finished. No new elements hidden.`);
+        }
     }
 
-    // Directly call the blocking function every time the script is injected
+    // Run the blocking logic
     blockListedContent(blockListToUse);
-
 }
 
-// Initial load is handled by DOMContentLoaded
 // Initial load is handled by DOMContentLoaded

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
   <title>Forcefield</title>
   <style>
     body {
@@ -44,6 +45,22 @@
     }
     .tag button:hover {
       color: #333;
+    }
+    .tag input[type=number] { /* Style for the level input */
+      width: 40px; /* Adjust width as needed */
+      margin-left: 8px;
+      margin-right: -5px; /* Pull remove button closer */
+      text-align: center;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      font-size: 0.9em;
+      /* Hide default arrows (optional, but can look cleaner) */
+      -moz-appearance: textfield; /* Firefox */
+    }
+    .tag input[type=number]::-webkit-outer-spin-button,
+    .tag input[type=number]::-webkit-inner-spin-button {
+        -webkit-appearance: none;
+        margin: 0;
     }
     #actionButtonContainer {
       text-align: center;
