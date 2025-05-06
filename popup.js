@@ -2,6 +2,12 @@ const wordInput = document.getElementById('wordInput');
 const addButton = document.getElementById('addButton');
 const blockListDiv = document.getElementById('blockList');
 const blockButton = document.getElementById('blockButton');
+const aiSuggestButton = document.getElementById('aiSuggestButton');
+
+// --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
+// Replace with a secure method (e.g., backend server call)
+const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY';
+// --- END INSECURE SECTION --- //
 
 // Load and display the blocklist when the popup opens
 document.addEventListener('DOMContentLoaded', loadBlockList);
@@ -37,6 +43,9 @@ blockButton.addEventListener('click', () => {
     });
   });
 });
+
+// Add listener for the AI Suggest button
+aiSuggestButton.addEventListener('click', getAiSuggestions);
 
 function loadBlockList() {
   chrome.storage.sync.get(['blockList'], (result) => {
@@ -209,6 +218,189 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '...
 
     // Run the blocking logic
     blockListedContent(blockListToUse);
+}
+
+// --- New AI Suggestion Functionality --- 
+
+// Utility function to log messages to the active tab's console
+async function logToPageConsole(tabId, ...args) {
+  try {
+    // Prepare args: stringify objects/arrays for safer injection
+    const preparedArgs = args.map(arg => 
+        (typeof arg === 'object' && arg !== null) ? JSON.stringify(arg, null, 2) : arg
+    );
+
+    await chrome.scripting.executeScript({
+      target: { tabId: tabId },
+      // Inject a simple function that just calls console.log
+      func: (...logs) => { console.log(...logs); },
+      args: preparedArgs, // Pass the prepared (potentially stringified) args
+    });
+  } catch (error) {
+    // Log error to popup's console if injection fails
+    console.error('Failed to log message to page console:', error);
+  }
+}
+
+// Function injected into the page to extract text
+function extractPageText() {
+    // A simple approach; might need refinement for complex pages (e.g., excluding navbars)
+    return document.body.innerText;
+}
+
+async function getAiSuggestions() {
+    console.log('[Forcefield AI] Requesting AI suggestions...');
+    aiSuggestButton.textContent = 'Analyzing...'; // Provide visual feedback
+    aiSuggestButton.disabled = true;
+
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+        if (tabs[0] && tabs[0].id) {
+            try {
+                const injectionResults = await chrome.scripting.executeScript({
+                    target: { tabId: tabs[0].id },
+                    func: extractPageText,
+                });
+
+                if (injectionResults && injectionResults[0] && injectionResults[0].result) {
+                    const pageText = injectionResults[0].result;
+                    // Log extracted text length to page console
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted text length:', pageText.length);
+
+                    // Prepare the prompt and API request
+                    const systemPrompt = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.\n\nFocus on extracting specific statements (phrases or sentences) that:\n- Criticize political figures or parties\n- Make controversial claims\n- Contain strong negative opinions or insults\n- Discuss polarizing social or political topics\n- Use inflammatory or charged language\n\nFor each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.\nDo NOT add explanations, apologies, or any text outside the <Negative> tags.\nDo NOT tag entire paragraphs unless the whole paragraph is a single negative statement.\nBe selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.\n\nExample Input Text:\n'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'\n\nExample Correct Output:\n<Negative>The new policy announced yesterday is terrible.</Negative>\n<Negative>Many people are upset.</Negative>`;
+                    const userPrompt = `Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n${pageText}\n----\n\nRemember to only return the tagged statements, nothing else.`;
+
+                    const requestBody = {
+                        model: "claude-3-5-sonnet-20240620", // Using Sonnet as Haiku might be too limited for complex pages, adjust if needed
+                        max_tokens: 4096, // Reduced from 8192 to manage costs/complexity
+                        temperature: 0.5, // Lower temperature for more focused output
+                        system: systemPrompt,
+                        messages: [
+                            {
+                                role: "user",
+                                content: userPrompt
+                            }
+                        ]
+                    };
+
+                    // Log prompt details to page console
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Sending prompt to Claude:', { system: 'System prompt (see popup source)', user: 'User prompt with page text...' /* Avoid logging full page text */ });
+                    // Log the *actual* request body to the page console
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Full Request Body:', JSON.stringify(requestBody, null, 2));
+
+                    // --- API Call --- //
+                    // WARNING: API Key is exposed client-side. See security note above.
+                    const response = await fetch('https://api.anthropic.com/v1/messages', {
+                        method: 'POST',
+                        headers: {
+                            'x-api-key': ANTHROPIC_API_KEY,
+                            'anthropic-version': '2023-06-01',
+                            'content-type': 'application/json',
+                            // Required header for direct browser access - ACKNOWLEDGES SECURITY RISK
+                            'anthropic-dangerous-direct-browser-access': 'true'
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+
+                    if (!response.ok) {
+                        const errorBody = await response.text();
+                        throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
+                    }
+
+                    const result = await response.json();
+                    // Log received response to page console
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Received response from Claude:', result);
+
+                    // Extract content from the response
+                    let aiResponseContent = '';
+                    if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
+                        aiResponseContent = result.content[0].text;
+                    }
+
+                    // Parse the response to find <Negative> tags
+                    const suggestions = extractNegativeTags(aiResponseContent);
+                    // Log extracted suggestions to page console
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted suggestions:', suggestions);
+
+                    if (suggestions.length > 0) {
+                         // Add suggestions to the blocklist (modify addWord logic slightly)
+                        addSuggestedWords(suggestions);
+                    } else {
+                         // Log no suggestions found to page console
+                         await logToPageConsole(tabs[0].id, '[Forcefield AI] No suggestions found in the response.');
+                         alert('AI analysis complete. No specific negative statements found to suggest.');
+                    }
+
+                } else {
+                    // Log error to popup console (as it's an extension-level issue)
+                    console.error('[Forcefield AI] Could not extract text from page.');
+                    alert('Could not extract text from the page for analysis.');
+                }
+
+            } catch (error) {
+                 // Log error to popup console (as it's an extension-level issue)
+                console.error('[Forcefield AI] Error during AI suggestion process:', error);
+                alert(`An error occurred during AI analysis: ${error.message}`);
+            } finally {
+                aiSuggestButton.textContent = 'Suggest Blocks (AI)'; // Reset button
+                aiSuggestButton.disabled = false;
+            }
+        } else {
+            console.error("[Forcefield AI] Could not get active tab ID.");
+            alert('Could not get the active tab. Please ensure you have a tab open and selected.');
+            aiSuggestButton.textContent = 'Suggest Blocks (AI)'; // Reset button
+            aiSuggestButton.disabled = false;
+        }
+    });
+}
+
+// Helper function to parse <Negative> tags
+function extractNegativeTags(text) {
+    const regex = /<Negative>(.*?)<\/Negative>/gs; // Use gs for global and dotall. Corrected escaping for /
+    const matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        // Trim whitespace and ensure it's not empty
+        const suggestion = match[1].trim();
+        if (suggestion) {
+             matches.push(suggestion);
+        }
+    }
+    return matches;
+}
+
+// Modified addWord function to handle an array of suggestions
+function addSuggestedWords(suggestions) {
+    chrome.storage.sync.get(['blockList'], (result) => {
+        let blockList = result.blockList || [];
+        let addedCount = 0;
+        suggestions.forEach(word => {
+            const trimmedWord = word.trim();
+            if (trimmedWord && !blockList.some(item => item.text.toLowerCase() === trimmedWord.toLowerCase())) {
+                 // Add as an object with default level 1, marked as AI suggested
+                blockList.push({ text: trimmedWord, level: 1, source: 'ai' });
+                addedCount++;
+                // Log added suggestion to popup console (or could be page console)
+                console.log(`[Forcefield AI] Added suggestion: "${trimmedWord}" (level 1)`);
+            } else if (trimmedWord) {
+                // Log existing suggestion to popup console (or could be page console)
+                console.log(`[Forcefield AI] Suggestion "${trimmedWord}" already in list or is empty.`);
+            }
+        });
+
+        if (addedCount > 0) {
+            chrome.storage.sync.set({ blockList }, () => {
+                 // Log summary to popup console (or could be page console)
+                console.log(`[Forcefield AI] Added ${addedCount} new suggestions to the blocklist.`);
+                displayBlockList(blockList); // Update display
+                alert(`Added ${addedCount} AI suggestions to the blocklist.`);
+            });
+        } else {
+             // Log summary to popup console (or could be page console)
+             console.log('[Forcefield AI] No new suggestions were added to the list.');
+             alert('AI analysis complete. No new suggestions were added (they might already exist).');
+        }
+    });
 }
 
 // Initial load is handled by DOMContentLoaded

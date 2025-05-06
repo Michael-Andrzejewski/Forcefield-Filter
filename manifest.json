@@ -4,6 +4,7 @@
   "version": "1.0",
   "description": "Blocks internet toxicity using AI.",
   "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://api.anthropic.com/*"],
   "action": {
     "default_popup": "popup.html"
   }
