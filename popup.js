@@ -3,6 +3,7 @@ const addButton = document.getElementById('addButton');
 const blockListDiv = document.getElementById('blockList');
 const blockButton = document.getElementById('blockButton');
 const aiSuggestButton = document.getElementById('aiSuggestButton');
+const clearAllButton = document.getElementById('clearAllButton');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Replace with a secure method (e.g., backend server call)
@@ -46,6 +47,9 @@ blockButton.addEventListener('click', () => {
 
 // Add listener for the AI Suggest button
 aiSuggestButton.addEventListener('click', getAiSuggestions);
+
+// Add listener for the Clear All button
+clearAllButton.addEventListener('click', clearAllBlocks);
 
 function loadBlockList() {
   chrome.storage.sync.get(['blockList'], (result) => {
@@ -148,8 +152,14 @@ function updateLevel(index, newLevel) {
 }
 
 // This function will be injected into the content page
-function injectContentScript(blockListToUse) { // blockListToUse is [{text: '...', level: ...}]
+function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.', level: ...}]
     // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse); // Less verbose
+
+    // Helper function to normalize different apostrophe/single quote characters
+    function normalizeApostrophes(str) {
+        if (!str) return str;
+        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ‘ ’ ` ´ with standard '
+    }
 
     function blockListedContent(blockList) {
         console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases.`);
@@ -165,47 +175,69 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '...
             if (element.style.display === 'none' && !element.dataset[hiddenMarker]) {
                 continue;
             }
-            // Skip elements without any text content
-            if (!element.textContent || !element.textContent.trim()) {
-                 continue;
-            }
 
-            // --- Focus on potential leaf nodes for checking --- 
-            if (element.children.length === 0) {
-                const text = element.textContent.toLowerCase();
+            // Check direct child text nodes for blocked content
+            let foundMatch = null;
+            let matchedBlockItem = null; // Store the item that caused the match
 
-                // Check if text contains any blocked word/phrase
-                let foundMatch = null;
-                for (const item of blockList) {
-                    if (text.includes(item.text.toLowerCase())) {
-                        foundMatch = item;
-                        break;
+            for (const childNode of element.childNodes) {
+                // Check only text nodes (nodeType 3) that have non-empty content
+                if (childNode.nodeType === 3 && childNode.nodeValue && childNode.nodeValue.trim()) {
+                    // Normalize and lower-case the text node's value
+                    const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
+
+                    // Check if this text contains any blocked word/phrase (normalized)
+                    for (const item of blockList) {
+                        // Normalize and lower-case the blocked item's text
+                        const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
+                        // Use normalized texts for comparison
+                        if (normalizedNodeText.includes(normalizedBlockText)) {
+                            foundMatch = element; // The element containing the text node is the target
+                            matchedBlockItem = item; // Store the matched item
+                            break; // Found a match for this text node, stop checking blocklist items
+                        }
                     }
                 }
-
                 if (foundMatch) {
-                    const levelsToAscend = foundMatch.level;
+                    break; // Found a match within this element's children, stop checking child nodes
+                }
+            }
 
-                    // Find the target element by ascending the DOM
-                    let elementToHide = element;
-                    for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
-                        elementToHide = elementToHide.parentElement;
-                    }
 
-                    // Check if the target is valid and not already hidden by this script
-                    if (elementToHide && elementToHide.style.display !== 'none') {
-                        // Prevent hiding the entire body or html elements
-                        if (elementToHide === document.body || elementToHide === document.documentElement) {
-                            console.warn(`[Forcefield] Avoided hiding BODY/HTML for "${foundMatch.text}".`);
-                            continue;
+            // If a match was found in the direct text nodes of this element
+            if (foundMatch && matchedBlockItem) { // Need both element and the block item details
+                const levelsToAscend = matchedBlockItem.level;
+
+                // Find the target element by ascending the DOM, stopping before body/html
+                let elementToHide = foundMatch; // Start ascent from the element containing the text node
+                let actualLevelsAscended = 0; // Track how many levels we actually went up
+                for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
+                    // Check BEFORE ascending: Is the *next* parent body or html?
+                    if (elementToHide.parentElement === document.body || elementToHide.parentElement === document.documentElement) {
+                        if (levelsToAscend > 0) { // Only log if we intended to ascend at all
+                            console.warn(`[Forcefield] Ascent for "${matchedBlockItem.text}" (level ${levelsToAscend}) stopped early at level ${j} to avoid hiding BODY/HTML. Hiding current element instead:`, elementToHide);
                         }
-
-                        // Hide the element and mark it
-                        // console.log(`[Forcefield] Hiding element (level ${levelsToAscend} ancestor) for "${foundMatch.text}":`, elementToHide); // Less verbose
-                        elementToHide.style.display = 'none';
-                        elementToHide.dataset[hiddenMarker] = 'true';
-                        elementsHidden++;
+                        break; // Stop ascending
                     }
+                    elementToHide = elementToHide.parentElement;
+                    actualLevelsAscended++;
+                }
+
+
+                // Check if the target is valid and not already hidden by this script
+                // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
+                if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement && elementToHide.style.display !== 'none') {
+
+                    // Hide the element and mark it
+                    // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
+                    elementToHide.style.display = 'none';
+                    elementToHide.dataset[hiddenMarker] = 'true';
+                    elementsHidden++;
+                } else if (elementToHide && elementToHide.style.display === 'none' && elementToHide.dataset[hiddenMarker]) {
+                    // Element already hidden by us, do nothing.
+                } else if (elementToHide === document.body || elementToHide === document.documentElement) {
+                     // Log if we still somehow ended up targeting body/html (e.g., original element was body/html and level was 0)
+                     console.warn(`[Forcefield] Avoided hiding BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
                 }
             }
         }
@@ -267,7 +299,7 @@ async function getAiSuggestions() {
                     await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted text length:', pageText.length);
 
                     // Prepare the prompt and API request
-                    const systemPrompt = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.\n\nFocus on extracting specific statements (phrases or sentences) that:\n- Criticize political figures or parties\n- Make controversial claims\n- Contain strong negative opinions or insults\n- Discuss polarizing social or political topics\n- Use inflammatory or charged language\n\nFor each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.\nDo NOT add explanations, apologies, or any text outside the <Negative> tags.\nDo NOT tag entire paragraphs unless the whole paragraph is a single negative statement.\nBe selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.\n\nExample Input Text:\n'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'\n\nExample Correct Output:\n<Negative>The new policy announced yesterday is terrible.</Negative>\n<Negative>Many people are upset.</Negative>`;
+                    const systemPrompt = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.\n\nFocus on extracting specific statements (phrases or sentences) that:\n- Criticize political figures or parties\n- Make controversial claims\n- Contain strong negative opinions or insults\n- Discuss polarizing social or political topics\n- Use inflammatory or charged language\n\nFor each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.\nDo NOT add explanations, apologies, or any text outside the <Negative> tags.\nDo NOT tag entire paragraphs; the tool only works on single statements.\nBe selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.\n\nExample Input Text:\n'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'\n\nExample Correct Output:\n<Negative>The new policy announced yesterday is terrible.</Negative>\n<Negative>Many people are upset.</Negative>`;
                     const userPrompt = `Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n${pageText}\n----\n\nRemember to only return the tagged statements, nothing else.`;
 
                     const requestBody = {
@@ -401,6 +433,17 @@ function addSuggestedWords(suggestions) {
              alert('AI analysis complete. No new suggestions were added (they might already exist).');
         }
     });
+}
+
+// New function to clear the entire blocklist
+function clearAllBlocks() {
+    // Optional: Add a confirmation dialog
+    if (confirm('Are you sure you want to remove all blocked items?')) {
+        chrome.storage.sync.set({ blockList: [] }, () => {
+            console.log('Blocklist cleared.');
+            displayBlockList([]); // Update display immediately
+        });
+    }
 }
 
 // Initial load is handled by DOMContentLoaded
