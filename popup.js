@@ -95,16 +95,60 @@ function displayBlockList(list) {
   });
 }
 
+// Function to determine the default block level based on the site URL
+function getDefaultLevelForSite(url) {
+    const defaultLevel = 1;
+    const siteDefaults = {
+        'twitter.com': 8,
+        'x.com': 8, // Add alias for twitter
+        'quora.com': 10
+    };
+
+    try {
+        const hostname = new URL(url).hostname;
+        // Remove www. if present
+        const effectiveHostname = hostname.startsWith('www.') ? hostname.substring(4) : hostname;
+
+        if (siteDefaults.hasOwnProperty(effectiveHostname)) {
+            console.log(`[Forcefield] Using site-specific default level ${siteDefaults[effectiveHostname]} for ${effectiveHostname}`);
+            return siteDefaults[effectiveHostname];
+        }
+    } catch (e) {
+        console.error("[Forcefield] Could not parse URL for default level:", url, e);
+    }
+
+    return defaultLevel; // Default level if no site match or error
+}
+
+// Make addWord async to fetch tab URL
+// async function addWord() { // <-- Reverted: Make sync again
 function addWord() {
   const word = wordInput.value.trim();
   if (word) {
+    // Get current tab URL to determine default level
+    // let defaultLevel = 1; // Fallback default <-- Reverted: No need to fetch URL here
+    // try {
+    //     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    //     if (tabs[0] && tabs[0].url) {
+    //         defaultLevel = getDefaultLevelForSite(tabs[0].url);
+    //     } else {
+    //         console.warn("[Forcefield] Could not get active tab URL. Using default level 1.");
+    //     }
+    // } catch (error) {
+    //     console.error("[Forcefield] Error getting active tab:", error);
+    //     // Keep defaultLevel = 1 in case of error
+    // }
+
+
     chrome.storage.sync.get(['blockList'], (result) => {
       const blockList = result.blockList || [];
       // Check if the word (text property) already exists
-      if (!blockList.some(item => item.text === word)) {
-        // Add as an object with default level 1
+      if (!blockList.some(item => item.text.toLowerCase() === word.toLowerCase())) { // Case-insensitive check
+        // Add as an object with the determined default level
+        // blockList.push({ text: word, level: defaultLevel }); // <-- Reverted: Use fixed level 1
         blockList.push({ text: word, level: 1 });
         chrome.storage.sync.set({ blockList }, () => {
+          // console.log(`Added "${word}" (level ${defaultLevel}) to blocklist.`); // <-- Reverted
           console.log(`Added "${word}" (level 1) to blocklist.`);
           displayBlockList(blockList); // Update display
           wordInput.value = ''; // Clear input
@@ -402,18 +446,34 @@ function extractNegativeTags(text) {
 }
 
 // Modified addWord function to handle an array of suggestions
-function addSuggestedWords(suggestions) {
+// Make async to get tab URL for default level
+async function addSuggestedWords(suggestions) {
+    // Get current tab URL to determine default level
+    let defaultLevel = 1; // Fallback default
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0] && tabs[0].url) {
+            defaultLevel = getDefaultLevelForSite(tabs[0].url);
+            console.log(`[Forcefield AI] Using default level ${defaultLevel} for AI suggestions on this site.`);
+        } else {
+            console.warn("[Forcefield AI] Could not get active tab URL for default level. Using level 1.");
+        }
+    } catch (error) {
+        console.error("[Forcefield AI] Error getting active tab for default level:", error);
+        // Keep defaultLevel = 1 in case of error
+    }
+
     chrome.storage.sync.get(['blockList'], (result) => {
         let blockList = result.blockList || [];
         let addedCount = 0;
         suggestions.forEach(word => {
             const trimmedWord = word.trim();
             if (trimmedWord && !blockList.some(item => item.text.toLowerCase() === trimmedWord.toLowerCase())) {
-                 // Add as an object with default level 1, marked as AI suggested
-                blockList.push({ text: trimmedWord, level: 1, source: 'ai' });
+                 // Add as an object with the determined default level, marked as AI suggested
+                blockList.push({ text: trimmedWord, level: defaultLevel, source: 'ai' });
                 addedCount++;
                 // Log added suggestion to popup console (or could be page console)
-                console.log(`[Forcefield AI] Added suggestion: "${trimmedWord}" (level 1)`);
+                console.log(`[Forcefield AI] Added suggestion: "${trimmedWord}" (level ${defaultLevel})`);
             } else if (trimmedWord) {
                 // Log existing suggestion to popup console (or could be page console)
                 console.log(`[Forcefield AI] Suggestion "${trimmedWord}" already in list or is empty.`);
