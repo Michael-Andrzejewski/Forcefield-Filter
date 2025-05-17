@@ -4,14 +4,61 @@ const blockListDiv = document.getElementById('blockList');
 const blockButton = document.getElementById('blockButton');
 const aiSuggestButton = document.getElementById('aiSuggestButton');
 const clearAllButton = document.getElementById('clearAllButton');
+const systemPromptText = document.getElementById('systemPromptText');
+const saveSystemPromptButton = document.getElementById('saveSystemPromptButton');
+const resetSystemPromptButton = document.getElementById('resetSystemPromptButton');
+const userPromptPrefixText = document.getElementById('userPromptPrefixText');
+const saveUserPromptPrefixButton = document.getElementById('saveUserPromptPrefixButton');
+const resetUserPromptPrefixButton = document.getElementById('resetUserPromptPrefixButton');
+const aiModelSelect = document.getElementById('aiModelSelect');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Replace with a secure method (e.g., backend server call)
 const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY';
 // --- END INSECURE SECTION --- //
 
-// Load and display the blocklist when the popup opens
-document.addEventListener('DOMContentLoaded', loadBlockList);
+// Default AI System Prompt
+const DEFAULT_SYSTEM_PROMPT = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
+
+Focus on extracting specific statements (phrases or sentences) that:
+- Criticize political figures or parties
+- Make controversial claims
+- Contain strong negative opinions or insults
+- Discuss polarizing social or political topics
+- Use inflammatory or charged language
+
+For each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.
+Do NOT add explanations, apologies, or any text outside the <Negative> tags.
+Do NOT tag entire paragraphs; the tool only works on single statements.
+Be selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.
+
+Example Input Text:
+'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'
+
+Example Correct Output:
+<Negative>The new policy announced yesterday is terrible.</Negative>
+<Negative>Many people are upset.</Negative>`;
+
+// Default AI User Prompt Prefix
+const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n`;
+const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now
+
+// AI Model Configuration
+const AVAILABLE_AI_MODELS = {
+    'claude-3-5-sonnet-20240620': 'Claude 3.5 Sonnet (New)',
+    'claude-3-opus-20240229': 'Claude 3 Opus',
+    'claude-3-sonnet-20240229': 'Claude 3 Sonnet (Older)',
+    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku'
+};
+const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
+
+// Load and display the blocklist and system prompt when the popup opens
+document.addEventListener('DOMContentLoaded', () => {
+    loadBlockList();
+    loadSystemPrompt();
+    loadUserPromptPrefix();
+    loadAiModelSelection();
+});
 
 // Add word to blocklist
 addButton.addEventListener('click', addWord);
@@ -50,6 +97,17 @@ aiSuggestButton.addEventListener('click', getAiSuggestions);
 
 // Add listener for the Clear All button
 clearAllButton.addEventListener('click', clearAllBlocks);
+
+// Add listeners for System Prompt buttons
+saveSystemPromptButton.addEventListener('click', saveSystemPrompt);
+resetSystemPromptButton.addEventListener('click', resetSystemPrompt);
+
+// Add listeners for User Prompt Prefix buttons
+saveUserPromptPrefixButton.addEventListener('click', saveUserPromptPrefix);
+resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
+
+// Add listener for AI Model selection change
+aiModelSelect.addEventListener('change', saveAiModelSelection);
 
 function loadBlockList() {
   chrome.storage.sync.get(['blockList'], (result) => {
@@ -329,6 +387,32 @@ async function getAiSuggestions() {
     aiSuggestButton.textContent = 'Analyzing...'; // Provide visual feedback
     aiSuggestButton.disabled = true;
 
+    // Get the current system prompt
+    const currentSystemPrompt = await new Promise((resolve) => {
+        chrome.storage.sync.get(['customSystemPrompt'], (result) => {
+            resolve(result.customSystemPrompt || DEFAULT_SYSTEM_PROMPT);
+        });
+    });
+
+    // Get the current user prompt prefix
+    const currentUserPromptPrefix = await new Promise((resolve) => {
+        chrome.storage.sync.get(['customUserPromptPrefix'], (result) => {
+            resolve(result.customUserPromptPrefix !== undefined ? result.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX);
+        });
+    });
+
+    // Get the current AI model
+    const currentAiModel = await new Promise((resolve) => {
+        chrome.storage.sync.get(['selectedAiModel'], (result) => {
+            const model = result.selectedAiModel || DEFAULT_AI_MODEL;
+            if (AVAILABLE_AI_MODELS[model]){
+                resolve(model);
+            } else {
+                resolve(DEFAULT_AI_MODEL); // Fallback
+            }
+        });
+    });
+
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
         if (tabs[0] && tabs[0].id) {
             try {
@@ -343,14 +427,13 @@ async function getAiSuggestions() {
                     await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted text length:', pageText.length);
 
                     // Prepare the prompt and API request
-                    const systemPrompt = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.\n\nFocus on extracting specific statements (phrases or sentences) that:\n- Criticize political figures or parties\n- Make controversial claims\n- Contain strong negative opinions or insults\n- Discuss polarizing social or political topics\n- Use inflammatory or charged language\n\nFor each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.\nDo NOT add explanations, apologies, or any text outside the <Negative> tags.\nDo NOT tag entire paragraphs; the tool only works on single statements.\nBe selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.\n\nExample Input Text:\n'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'\n\nExample Correct Output:\n<Negative>The new policy announced yesterday is terrible.</Negative>\n<Negative>Many people are upset.</Negative>`;
-                    const userPrompt = `Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n${pageText}\n----\n\nRemember to only return the tagged statements, nothing else.`;
+                    const userPrompt = `${currentUserPromptPrefix}${pageText}${DEFAULT_USER_PROMPT_SUFFIX}`;
 
                     const requestBody = {
-                        model: "claude-3-5-sonnet-20240620", // Using Sonnet as Haiku might be too limited for complex pages, adjust if needed
-                        max_tokens: 4096, // Reduced from 8192 to manage costs/complexity
-                        temperature: 0.5, // Lower temperature for more focused output
-                        system: systemPrompt,
+                        model: currentAiModel, 
+                        max_tokens: 4096, 
+                        temperature: 0.5, 
+                        system: currentSystemPrompt, 
                         messages: [
                             {
                                 role: "user",
@@ -386,6 +469,8 @@ async function getAiSuggestions() {
                     const result = await response.json();
                     // Log received response to page console
                     await logToPageConsole(tabs[0].id, '[Forcefield AI] Received response from Claude:', result);
+                    // Log full raw response to extension console (new)
+                    console.log('[Forcefield AI] Full raw response from Claude:', result);
 
                     // Extract content from the response
                     let aiResponseContent = '';
@@ -503,6 +588,98 @@ function clearAllBlocks() {
             console.log('Blocklist cleared.');
             displayBlockList([]); // Update display immediately
         });
+    }
+}
+
+function loadSystemPrompt() {
+    chrome.storage.sync.get(['customSystemPrompt'], (result) => {
+        const promptToDisplay = result.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+        systemPromptText.value = promptToDisplay;
+    });
+}
+
+function saveSystemPrompt() {
+    const customPrompt = systemPromptText.value.trim();
+    if (customPrompt) {
+        chrome.storage.sync.set({ customSystemPrompt: customPrompt }, () => {
+            console.log('[Forcefield AI] Custom system prompt saved.');
+            alert('System prompt saved!');
+        });
+    } else {
+        // If the user tries to save an empty prompt, reset to default
+        resetSystemPrompt(false); // Pass false to avoid double alert if resetSystemPrompt also alerts
+        alert('System prompt cannot be empty. Resetting to default.');
+    }
+}
+
+function resetSystemPrompt(showAlert = true) {
+    systemPromptText.value = DEFAULT_SYSTEM_PROMPT;
+    chrome.storage.sync.set({ customSystemPrompt: DEFAULT_SYSTEM_PROMPT }, () => {
+        console.log('[Forcefield AI] System prompt reset to default.');
+        if (showAlert) {
+            alert('System prompt reset to default!');
+        }
+    });
+}
+
+function loadUserPromptPrefix() {
+    chrome.storage.sync.get(['customUserPromptPrefix'], (result) => {
+        const prefixToDisplay = result.customUserPromptPrefix || DEFAULT_USER_PROMPT_PREFIX;
+        userPromptPrefixText.value = prefixToDisplay;
+    });
+}
+
+function saveUserPromptPrefix() {
+    const customPrefix = userPromptPrefixText.value; // Allow empty string, but trim for storage consistency if preferred
+    // No specific validation here, user can set it as they wish, even empty.
+    // If empty, the prompt will just start with pageText.
+    chrome.storage.sync.set({ customUserPromptPrefix: customPrefix }, () => {
+        console.log('[Forcefield AI] Custom user prompt prefix saved.');
+        alert('User prompt prefix saved!');
+    });
+}
+
+function resetUserPromptPrefix(showAlert = true) {
+    userPromptPrefixText.value = DEFAULT_USER_PROMPT_PREFIX;
+    chrome.storage.sync.set({ customUserPromptPrefix: DEFAULT_USER_PROMPT_PREFIX }, () => {
+        console.log('[Forcefield AI] User prompt prefix reset to default.');
+        if (showAlert) {
+            alert('User prompt prefix reset to default!');
+        }
+    });
+}
+
+function loadAiModelSelection() {
+    // Populate the dropdown
+    aiModelSelect.innerHTML = ''; // Clear existing options
+    for (const modelId in AVAILABLE_AI_MODELS) {
+        const option = document.createElement('option');
+        option.value = modelId;
+        option.textContent = AVAILABLE_AI_MODELS[modelId];
+        aiModelSelect.appendChild(option);
+    }
+
+    // Load saved selection or use default
+    chrome.storage.sync.get(['selectedAiModel'], (result) => {
+        const selectedModel = result.selectedAiModel || DEFAULT_AI_MODEL;
+        if (AVAILABLE_AI_MODELS[selectedModel]) {
+            aiModelSelect.value = selectedModel;
+        } else {
+            aiModelSelect.value = DEFAULT_AI_MODEL; // Fallback if saved model is invalid
+            console.warn(`[Forcefield AI] Saved model ${selectedModel} not found in available models. Using default.`);
+        }
+    });
+}
+
+function saveAiModelSelection() {
+    const selectedModel = aiModelSelect.value;
+    if (AVAILABLE_AI_MODELS[selectedModel]) {
+        chrome.storage.sync.set({ selectedAiModel: selectedModel }, () => {
+            console.log(`[Forcefield AI] AI Model selection saved: ${selectedModel}`);
+            // Optional: alert('AI Model selection saved!'); 
+        });
+    } else {
+        console.error(`[Forcefield AI] Attempted to save invalid model: ${selectedModel}`);
     }
 }
 

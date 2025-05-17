@@ -83,6 +83,28 @@
     <button id="clearAllButton" style="margin-top: 5px;">Clear All Blocks</button>
   </div>
 
+  <div id="aiModelContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
+    <h4 style="margin-top: 0; margin-bottom: 5px;">AI Model:</h4>
+    <select id="aiModelSelect" style="width: 98%; margin-bottom: 5px;">
+      <!-- Options will be populated by JavaScript -->
+    </select>
+    <!-- No save button needed, will save on change or on use -->
+  </div>
+
+  <div id="systemPromptContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
+    <h4 style="margin-top: 0; margin-bottom: 5px;">AI System Prompt:</h4>
+    <textarea id="systemPromptText" rows="6" style="width: 98%; margin-bottom: 5px;"></textarea>
+    <button id="saveSystemPromptButton">Save Prompt</button>
+    <button id="resetSystemPromptButton">Reset to Default</button>
+  </div>
+
+  <div id="userPromptPrefixContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
+    <h4 style="margin-top: 0; margin-bottom: 5px;">AI User Prompt Prefix:</h4>
+    <textarea id="userPromptPrefixText" rows="4" style="width: 98%; margin-bottom: 5px;"></textarea>
+    <button id="saveUserPromptPrefixButton">Save Prefix</button>
+    <button id="resetUserPromptPrefixButton">Reset to Default</button>
+  </div>
+
   <script src="popup.js"></script>
 </body>
 </html> 
