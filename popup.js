@@ -11,13 +11,16 @@ const userPromptPrefixText = document.getElementById('userPromptPrefixText');
 const saveUserPromptPrefixButton = document.getElementById('saveUserPromptPrefixButton');
 const resetUserPromptPrefixButton = document.getElementById('resetUserPromptPrefixButton');
 const aiModelSelect = document.getElementById('aiModelSelect');
+const startScanningButton = document.getElementById('startScanningButton');
+const stopScanningButton = document.getElementById('stopScanningButton');
+const scanningStatus = document.getElementById('scanningStatus');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
-// Replace with a secure method (e.g., backend server call)
+// Kept for the manual "Suggest Blocks (AI)" feature in popup.js
 const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY';
 // --- END INSECURE SECTION --- //
 
-// Default AI System Prompt
+// Default AI System Prompt (kept for popup.js features)
 const DEFAULT_SYSTEM_PROMPT = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
 
 Focus on extracting specific statements (phrases or sentences) that:
@@ -39,11 +42,11 @@ Example Correct Output:
 <Negative>The new policy announced yesterday is terrible.</Negative>
 <Negative>Many people are upset.</Negative>`;
 
-// Default AI User Prompt Prefix
+// Default AI User Prompt Prefix (kept for popup.js features)
 const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n`;
 const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now
 
-// AI Model Configuration
+// AI Model Configuration (kept for popup.js features)
 const AVAILABLE_AI_MODELS = {
     'claude-3-5-sonnet-20240620': 'Claude 3.5 Sonnet (New)',
     'claude-3-opus-20240229': 'Claude 3 Opus',
@@ -58,6 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSystemPrompt();
     loadUserPromptPrefix();
     loadAiModelSelection();
+    loadScanningState(); // Load and set initial scanning state
 });
 
 // Add word to blocklist
@@ -74,21 +78,9 @@ blockButton.addEventListener('click', () => {
     const blockList = result.blockList || [];
     if (blockList.length === 0) {
         console.log("Blocklist is empty. Nothing to block.");
-        // Optionally, provide user feedback here, e.g., alert("Blocklist is empty.")
         return;
     }
-
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      if (tabs[0] && tabs[0].id) {
-        chrome.scripting.executeScript({
-          target: { tabId: tabs[0].id },
-          func: injectContentScript,
-          args: [blockList] // Pass the blocklist (now array of objects)
-        }).catch(err => console.error("Error injecting script: ", err));
-      } else {
-        console.error("Could not get active tab ID.");
-      }
-    });
+    triggerPageBlock(blockList);
   });
 });
 
@@ -108,6 +100,167 @@ resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
 
 // Add listener for AI Model selection change
 aiModelSelect.addEventListener('change', saveAiModelSelection);
+
+// Add listeners for Scanning buttons
+startScanningButton.addEventListener('click', startContinuousScanning);
+stopScanningButton.addEventListener('click', stopContinuousScanning);
+
+// Listen for messages from content scripts or background script
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.command === "scanningStateChanged") {
+        updateScanningStatus(request.status);
+        sendResponse({status: "Popup status updated"});
+    } else if (request.command === "blockListUpdated") {
+        console.log('[Forcefield Popup] Received blockListUpdated from background. New suggestions:', request.newSuggestions);
+        // Potentially alert the user or just refresh the list display
+        loadBlockList(); // Reloads and displays the blocklist
+        if (request.newSuggestions && request.newSuggestions.length > 0) {
+            // Optional: alert(`Background AI added: ${request.newSuggestions.join(', ')}`);
+        }
+        sendResponse({status: "Popup blocklist display updated"});
+    }
+    return true; 
+});
+
+function updateScanningStatus(statusText) {
+    if (scanningStatus) {
+        scanningStatus.textContent = statusText;
+    }
+    // console.log('[Forcefield Popup] Scanning status update:', statusText);
+}
+
+async function loadScanningState() {
+    chrome.storage.local.get(['isScanning'], (result) => {
+        const isScanning = result.isScanning || false;
+        if (isScanning) {
+            startScanningButton.style.display = 'none';
+            stopScanningButton.style.display = 'inline-block';
+            updateScanningStatus('Scanning active (popup reloaded).');
+            // Ensure content script is aware, or re-initiate if necessary
+            pingContentScriptObserverState();
+        } else {
+            startScanningButton.style.display = 'inline-block';
+            stopScanningButton.style.display = 'none';
+            updateScanningStatus('Scanning inactive.');
+        }
+    });
+}
+
+async function pingContentScriptObserverState() {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0] && tabs[0].id) {
+            chrome.tabs.sendMessage(tabs[0].id, { command: "queryObserverState" }, (response) => {
+                if (chrome.runtime.lastError) {
+                    // console.warn('[Forcefield Popup] Could not query content script state. It might not be injected yet.', chrome.runtime.lastError.message);
+                    updateScanningStatus('Error: Content script unreachable. Try reloading tab or restarting scan.');
+                    // Potentially force stop the scanning state in storage if content script is persistently unavailable
+                    // chrome.storage.local.set({ isScanning: false }); 
+                    // loadScanningState(); // and refresh UI
+                } else if (response && response.isObserving) {
+                    updateScanningStatus('Scanning active.');
+                } else {
+                     updateScanningStatus('Scanning was active, but observer stopped. Restarting...');
+                     startContinuousScanningLogic(tabs[0].id); // Attempt to restart
+                }
+            });
+        }
+    });
+}
+
+function startContinuousScanning() {
+    chrome.storage.local.set({ isScanning: true }, () => {
+        startScanningButton.style.display = 'none';
+        stopScanningButton.style.display = 'inline-block';
+        updateScanningStatus('Starting scan...');
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0] && tabs[0].id) {
+                startContinuousScanningLogic(tabs[0].id);
+                // Notify background script that scanning has started for this tab
+                chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabs[0].id })
+                    .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan start:", err));
+            } else {
+                console.error("[Forcefield] Could not get active tab ID to start scanning.");
+                updateScanningStatus('Error: No active tab found.');
+                chrome.storage.local.set({ isScanning: false }); // Revert state
+                loadScanningState(); // Refresh UI
+            }
+        });
+    });
+}
+
+async function startContinuousScanningLogic(tabId) {
+     try {
+        // Ensure the content script is injected
+        await chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            files: ['continuousScan.js']
+        });
+        // console.log('[Forcefield Popup] continuousScan.js injected/ensured.');
+
+        // Send command to start observing
+        chrome.tabs.sendMessage(tabId, { command: "startObserving" }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('[Forcefield Popup] Error starting observer:', chrome.runtime.lastError.message);
+                updateScanningStatus(`Error: ${chrome.runtime.lastError.message}. Try reloading tab.`);
+                // Don't automatically revert isScanning state here, user might fix by reloading tab
+            } else {
+                // console.log('[Forcefield Popup] Observer start command sent, response:', response);
+                // Status update will come from content script via 'scanningStateChanged' message
+            }
+        });
+    } catch (err) {
+        console.error('[Forcefield Popup] Failed to inject continuousScan.js or send start command:', err);
+        updateScanningStatus(`Injection/Init error: ${err.message}. Try reloading tab.`);
+        // Don't automatically revert isScanning state here
+    }
+}
+
+function stopContinuousScanning() {
+    // Abort controller logic for popup-initiated AI calls (like manual suggest) should remain if it exists.
+    // The currentAiCallAbortController here was for the popup's own AI calls.
+    // Background.js has its own controller now.
+
+    chrome.storage.local.set({ isScanning: false }, () => {
+        startScanningButton.style.display = 'inline-block';
+        stopScanningButton.style.display = 'none';
+        updateScanningStatus('Stopping scan...');
+
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs[0] && tabs[0].id) {
+                // Notify content script to stop observing
+                chrome.tabs.sendMessage(tabs[0].id, { command: "stopObserving" }, (response) => {
+                    if (chrome.runtime.lastError) {
+                        console.error('[Forcefield Popup] Error stopping observer in content script:', chrome.runtime.lastError.message);
+                        updateScanningStatus(`Error stopping observer: ${chrome.runtime.lastError.message}`);
+                    } else {
+                        // console.log('[Forcefield Popup] Observer stop command sent to content script.');
+                    }
+                });
+                // Notify background script that scanning has stopped for this tab
+                chrome.runtime.sendMessage({ command: "stopContinuousScanBG", tabId: tabs[0].id })
+                    .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan stop:", err));
+            } else {
+                console.error("[Forcefield] Could not get active tab ID to stop scanning.");
+                updateScanningStatus('Error: No active tab found to stop.');
+            }
+        });
+    });
+}
+
+// Helper to trigger the main blocking script
+function triggerPageBlock(blockListToUse) {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (tabs[0] && tabs[0].id) {
+            chrome.scripting.executeScript({
+                target: { tabId: tabs[0].id },
+                func: injectContentScript, // This is the existing function from original script
+                args: [blockListToUse]
+            }).catch(err => console.error("[Forcefield] Error injecting/running main block script: ", err));
+        } else {
+            console.error("[Forcefield] Could not get active tab ID to block content.");
+        }
+    });
+}
 
 function loadBlockList() {
   chrome.storage.sync.get(['blockList'], (result) => {
@@ -260,7 +413,7 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.',
     // Helper function to normalize different apostrophe/single quote characters
     function normalizeApostrophes(str) {
         if (!str) return str;
-        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ‘ ’ ` ´ with standard '
+        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ' ' ` ´ with standard '
     }
 
     function blockListedContent(blockList) {
@@ -532,20 +685,23 @@ function extractNegativeTags(text) {
 
 // Modified addWord function to handle an array of suggestions
 // Make async to get tab URL for default level
-async function addSuggestedWords(suggestions) {
-    // Get current tab URL to determine default level
-    let defaultLevel = 1; // Fallback default
-    try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0] && tabs[0].url) {
-            defaultLevel = getDefaultLevelForSite(tabs[0].url);
-            console.log(`[Forcefield AI] Using default level ${defaultLevel} for AI suggestions on this site.`);
-        } else {
-            console.warn("[Forcefield AI] Could not get active tab URL for default level. Using level 1.");
+async function addSuggestedWords(suggestions, defaultLevelOverride = null, source = 'ai_manual') {
+    // Get current tab URL to determine default level IF not overridden
+    let defaultLevelToUse = 1; 
+    if (defaultLevelOverride !== null) {
+        defaultLevelToUse = defaultLevelOverride;
+    } else {
+        try {
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            if (tabs[0] && tabs[0].url) {
+                defaultLevelToUse = getDefaultLevelForSite(tabs[0].url);
+                // console.log(`[Forcefield AI - ${source}] Using default level ${defaultLevelToUse} for suggestions.`);
+            } else {
+                // console.warn(`[Forcefield AI - ${source}] Could not get active tab URL. Using level 1.`);
+            }
+        } catch (error) {
+            console.error(`[Forcefield AI - ${source}] Error getting active tab for default level:`, error);
         }
-    } catch (error) {
-        console.error("[Forcefield AI] Error getting active tab for default level:", error);
-        // Keep defaultLevel = 1 in case of error
     }
 
     chrome.storage.sync.get(['blockList'], (result) => {
@@ -554,28 +710,27 @@ async function addSuggestedWords(suggestions) {
         suggestions.forEach(word => {
             const trimmedWord = word.trim();
             if (trimmedWord && !blockList.some(item => item.text.toLowerCase() === trimmedWord.toLowerCase())) {
-                 // Add as an object with the determined default level, marked as AI suggested
-                blockList.push({ text: trimmedWord, level: defaultLevel, source: 'ai' });
+                blockList.push({ text: trimmedWord, level: defaultLevelToUse, source: source });
                 addedCount++;
-                // Log added suggestion to popup console (or could be page console)
-                console.log(`[Forcefield AI] Added suggestion: "${trimmedWord}" (level ${defaultLevel})`);
+                console.log(`[Forcefield AI - ${source}] Added suggestion: "${trimmedWord}" (level ${defaultLevelToUse})`);
             } else if (trimmedWord) {
-                // Log existing suggestion to popup console (or could be page console)
-                console.log(`[Forcefield AI] Suggestion "${trimmedWord}" already in list or is empty.`);
+                console.log(`[Forcefield AI - ${source}] Suggestion "${trimmedWord}" already in list or is empty.`);
             }
         });
 
         if (addedCount > 0) {
             chrome.storage.sync.set({ blockList }, () => {
-                 // Log summary to popup console (or could be page console)
-                console.log(`[Forcefield AI] Added ${addedCount} new suggestions to the blocklist.`);
+                console.log(`[Forcefield AI - ${source}] Added ${addedCount} new suggestions to the blocklist.`);
                 displayBlockList(blockList); // Update display
-                alert(`Added ${addedCount} AI suggestions to the blocklist.`);
+                if (source !== 'ai_continuous') { // Avoid double alert for continuous scan
+                    alert(`Added ${addedCount} AI suggestions to the blocklist.`);
+                }
             });
         } else {
-             // Log summary to popup console (or could be page console)
-             console.log('[Forcefield AI] No new suggestions were added to the list.');
-             alert('AI analysis complete. No new suggestions were added (they might already exist).');
+             console.log(`[Forcefield AI - ${source}] No new suggestions were added to the list.`);
+             if (source !== 'ai_continuous') { // Avoid double alert
+                alert('AI analysis complete. No new suggestions were added (they might already exist).');
+            }
         }
     });
 }
