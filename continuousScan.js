@@ -110,8 +110,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // This helps if the extension popup was closed and reopened while scanning was active.
 chrome.storage.local.get(['isScanning'], (result) => {
     if (result.isScanning) {
-        // console.log('[Forcefield Continuous Scan] Resuming observation based on stored state.');
-        startObserver();
+        // console.log('[Forcefield Continuous Scan] Script loaded/re-injected while scanning was globally active.');
+        // The popup.js logic (loadScanningState -> pingContentScriptObserverState -> startContinuousScanningLogic)
+        // is now responsible for explicitly telling this script to start observing if needed for the current tab.
+        // No automatic startObserver() call here anymore.
     } else {
         // console.log('[Forcefield Continuous Scan] Initial state is not scanning.');
     }

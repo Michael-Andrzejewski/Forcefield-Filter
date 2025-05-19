@@ -284,7 +284,7 @@ async function processNewContentWithAIBackground(text, tabId) {
             messages: [{ role: "user", content: userPrompt }]
         };
 
-        logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Sending prompt. Body:', JSON.stringify(requestBody, (key, value) => key === 'content' && typeof value === 'string' && value.length > 100 ? value.substring(0,100) + '...' : value, 2));
+        logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Sending prompt. Body:', JSON.stringify(requestBody, null, 2));
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',

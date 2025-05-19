@@ -189,30 +189,46 @@ function startContinuousScanning() {
 }
 
 async function startContinuousScanningLogic(tabId) {
-     try {
-        // Ensure the content script is injected
-        await chrome.scripting.executeScript({
-            target: { tabId: tabId },
-            files: ['continuousScan.js']
-        });
-        // console.log('[Forcefield Popup] continuousScan.js injected/ensured.');
+    // First, try to send the startObserving command.
+    // If the script is already injected and listening, this will succeed.
+    chrome.tabs.sendMessage(tabId, { command: "startObserving" }, async (response) => {
+        if (chrome.runtime.lastError) {
+            // Error sending message: content script likely not injected or not listening.
+            console.warn('[Forcefield Popup] Failed to send startObserving, attempting to inject continuousScan.js:', chrome.runtime.lastError.message);
+            try {
+                await chrome.scripting.executeScript({
+                    target: { tabId: tabId },
+                    files: ['continuousScan.js']
+                });
+                // console.log('[Forcefield Popup] continuousScan.js injected.');
 
-        // Send command to start observing
-        chrome.tabs.sendMessage(tabId, { command: "startObserving" }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.error('[Forcefield Popup] Error starting observer:', chrome.runtime.lastError.message);
-                updateScanningStatus(`Error: ${chrome.runtime.lastError.message}. Try reloading tab.`);
-                // Don't automatically revert isScanning state here, user might fix by reloading tab
-            } else {
-                // console.log('[Forcefield Popup] Observer start command sent, response:', response);
-                // Status update will come from content script via 'scanningStateChanged' message
+                // After successful injection, send the startObserving command again.
+                chrome.tabs.sendMessage(tabId, { command: "startObserving" }, (responseAfterInjection) => {
+                    if (chrome.runtime.lastError) {
+                        console.error('[Forcefield Popup] Error starting observer even after injection:', chrome.runtime.lastError.message);
+                        updateScanningStatus(`Error: ${chrome.runtime.lastError.message}. Try reloading tab.`);
+                        // Revert isScanning state if observer cannot be started
+                        chrome.storage.local.set({ isScanning: false }, () => {
+                            loadScanningState(); // Refresh UI
+                        });
+                    } else {
+                        // console.log('[Forcefield Popup] Observer start command sent after injection, response:', responseAfterInjection);
+                        // Status update should come from content script via 'scanningStateChanged' message.
+                    }
+                });
+            } catch (injectionError) {
+                console.error('[Forcefield Popup] Failed to inject continuousScan.js:', injectionError);
+                updateScanningStatus(`Injection error: ${injectionError.message}. Try reloading tab.`);
+                // Revert isScanning state if injection fails
+                chrome.storage.local.set({ isScanning: false }, () => {
+                    loadScanningState(); // Refresh UI
+                });
             }
-        });
-    } catch (err) {
-        console.error('[Forcefield Popup] Failed to inject continuousScan.js or send start command:', err);
-        updateScanningStatus(`Injection/Init error: ${err.message}. Try reloading tab.`);
-        // Don't automatically revert isScanning state here
-    }
+        } else {
+            // console.log('[Forcefield Popup] Observer start command sent (script was already injected), response:', response);
+            // Status update should come from content script via 'scanningStateChanged' message.
+        }
+    });
 }
 
 function stopContinuousScanning() {
