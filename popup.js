@@ -11,8 +11,6 @@ const userPromptPrefixText = document.getElementById('userPromptPrefixText');
 const saveUserPromptPrefixButton = document.getElementById('saveUserPromptPrefixButton');
 const resetUserPromptPrefixButton = document.getElementById('resetUserPromptPrefixButton');
 const aiModelSelect = document.getElementById('aiModelSelect');
-const startScanningButton = document.getElementById('startScanningButton');
-const stopScanningButton = document.getElementById('stopScanningButton');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Replace with a secure method (e.g., backend server call)
@@ -60,7 +58,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadSystemPrompt();
     loadUserPromptPrefix();
     loadAiModelSelection();
-    loadScanningState();
 });
 
 // Add word to blocklist
@@ -111,67 +108,6 @@ resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
 
 // Add listener for AI Model selection change
 aiModelSelect.addEventListener('change', saveAiModelSelection);
-
-// Function to load scanning state
-function loadScanningState() {
-    chrome.runtime.sendMessage({ action: 'getScanningState' }, (response) => {
-        if (response && response.isScanning) {
-            startScanningButton.style.display = 'none';
-            stopScanningButton.style.display = 'block';
-        } else {
-            startScanningButton.style.display = 'block';
-            stopScanningButton.style.display = 'none';
-        }
-    });
-}
-
-// Add listeners for scanning buttons
-startScanningButton.addEventListener('click', () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0] && tabs[0].id) {
-            // Start scanning (contentScanner.js is already injected by manifest)
-            chrome.tabs.sendMessage(tabs[0].id, { action: 'startScanning' }, (response) => {
-                if (chrome.runtime.lastError) {
-                    // Handle cases where the content script might not be ready or the tab is non-responsive
-                    console.error('Error sending startScanning message:', chrome.runtime.lastError.message);
-                    alert('Could not communicate with the content scanner on this page. Try reloading the page or ensure it is not a restricted URL (e.g., chrome:// pages).');
-                    // Optionally, reset button states here if needed
-                    return;
-                }
-                if (response && response.success) {
-                    startScanningButton.style.display = 'none';
-                    stopScanningButton.style.display = 'block';
-                } else if (response && response.error) {
-                    console.error('Error starting scanning:', response.error);
-                    alert(`Could not start scanning: ${response.error}`);
-                } else {
-                    // This case might indicate the content script isn't receiving or responding correctly.
-                    console.warn('Start scanning did not receive a success response or an error message.');
-                    // It might be that the content script is there but the message listener for 'startScanning' isn't set up,
-                    // or there was an issue within the content script's handler.
-                    // For now, we'll assume if no explicit error or success, something is amiss.
-                    alert('Could not confirm scanning started. The content script might not be responding correctly.');
-                }
-            });
-        } else {
-            console.error("Could not get active tab ID to start scanning.");
-            alert("Could not get the active tab. Please try again.");
-        }
-    });
-});
-
-stopScanningButton.addEventListener('click', () => {
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-        if (tabs[0] && tabs[0].id) {
-            chrome.tabs.sendMessage(tabs[0].id, { action: 'stopScanning' }, (response) => {
-                if (response && response.success) {
-                    startScanningButton.style.display = 'block';
-                    stopScanningButton.style.display = 'none';
-                }
-            });
-        }
-    });
-});
 
 function loadBlockList() {
   chrome.storage.sync.get(['blockList'], (result) => {
@@ -315,6 +251,107 @@ function updateLevel(index, newLevel) {
             console.error("Attempted to update level for non-existent item at index:", index);
         }
     });
+}
+
+// This function will be injected into the content page
+function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.', level: ...}]
+    // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse); // Less verbose
+
+    // Helper function to normalize different apostrophe/single quote characters
+    function normalizeApostrophes(str) {
+        if (!str) return str;
+        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ‘ ’ ` ´ with standard '
+    }
+
+    function blockListedContent(blockList) {
+        console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases.`);
+        const allElements = document.body.getElementsByTagName('*');
+        let elementsHidden = 0;
+        const hiddenMarker = 'hiddenByForcefield'; // Use a constant for the dataset key
+
+        // Iterate backwards through all elements
+        for (let i = allElements.length - 1; i >= 0; i--) {
+            const element = allElements[i];
+
+            // Skip elements that are already hidden by means other than this script
+            if (element.style.display === 'none' && !element.dataset[hiddenMarker]) {
+                continue;
+            }
+
+            // Check direct child text nodes for blocked content
+            let foundMatch = null;
+            let matchedBlockItem = null; // Store the item that caused the match
+
+            for (const childNode of element.childNodes) {
+                // Check only text nodes (nodeType 3) that have non-empty content
+                if (childNode.nodeType === 3 && childNode.nodeValue && childNode.nodeValue.trim()) {
+                    // Normalize and lower-case the text node's value
+                    const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
+
+                    // Check if this text contains any blocked word/phrase (normalized)
+                    for (const item of blockList) {
+                        // Normalize and lower-case the blocked item's text
+                        const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
+                        // Use normalized texts for comparison
+                        if (normalizedNodeText.includes(normalizedBlockText)) {
+                            foundMatch = element; // The element containing the text node is the target
+                            matchedBlockItem = item; // Store the matched item
+                            break; // Found a match for this text node, stop checking blocklist items
+                        }
+                    }
+                }
+                if (foundMatch) {
+                    break; // Found a match within this element's children, stop checking child nodes
+                }
+            }
+
+
+            // If a match was found in the direct text nodes of this element
+            if (foundMatch && matchedBlockItem) { // Need both element and the block item details
+                const levelsToAscend = matchedBlockItem.level;
+
+                // Find the target element by ascending the DOM, stopping before body/html
+                let elementToHide = foundMatch; // Start ascent from the element containing the text node
+                let actualLevelsAscended = 0; // Track how many levels we actually went up
+                for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
+                    // Check BEFORE ascending: Is the *next* parent body or html?
+                    if (elementToHide.parentElement === document.body || elementToHide.parentElement === document.documentElement) {
+                        if (levelsToAscend > 0) { // Only log if we intended to ascend at all
+                            console.warn(`[Forcefield] Ascent for "${matchedBlockItem.text}" (level ${levelsToAscend}) stopped early at level ${j} to avoid hiding BODY/HTML. Hiding current element instead:`, elementToHide);
+                        }
+                        break; // Stop ascending
+                    }
+                    elementToHide = elementToHide.parentElement;
+                    actualLevelsAscended++;
+                }
+
+
+                // Check if the target is valid and not already hidden by this script
+                // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
+                if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement && elementToHide.style.display !== 'none') {
+
+                    // Hide the element and mark it
+                    // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
+                    elementToHide.style.display = 'none';
+                    elementToHide.dataset[hiddenMarker] = 'true';
+                    elementsHidden++;
+                } else if (elementToHide && elementToHide.style.display === 'none' && elementToHide.dataset[hiddenMarker]) {
+                    // Element already hidden by us, do nothing.
+                } else if (elementToHide === document.body || elementToHide === document.documentElement) {
+                     // Log if we still somehow ended up targeting body/html (e.g., original element was body/html and level was 0)
+                     console.warn(`[Forcefield] Avoided hiding BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
+                }
+            }
+        }
+        if (elementsHidden > 0) {
+            console.log(`[Forcefield] Scan finished. Hid ${elementsHidden} elements/ancestors.`);
+        } else {
+            console.log(`[Forcefield] Scan finished. No new elements hidden.`);
+        }
+    }
+
+    // Run the blocking logic
+    blockListedContent(blockListToUse);
 }
 
 // --- New AI Suggestion Functionality --- 

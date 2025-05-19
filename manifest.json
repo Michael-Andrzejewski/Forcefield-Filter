@@ -3,19 +3,9 @@
   "name": "Forcefield",
   "version": "1.0",
   "description": "Blocks internet toxicity using AI.",
-  "permissions": ["activeTab", "scripting", "storage", "tabs"],
+  "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["https://api.anthropic.com/*"],
-  "background": {
-    "service_worker": "background.js"
-  },
   "action": {
     "default_popup": "popup.html"
-  },
-  "content_scripts": [
-    {
-      "matches": ["<all_urls>"],
-      "js": ["contentScanner.js"],
-      "run_at": "document_start"
-    }
-  ]
+  }
 } 
