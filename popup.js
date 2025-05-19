@@ -74,7 +74,7 @@ wordInput.addEventListener('keypress', (e) => {
 
 // Trigger content script
 blockButton.addEventListener('click', () => {
-  chrome.storage.sync.get(['blockList'], (result) => {
+  chrome.storage.local.get(['blockList'], (result) => {
     const blockList = result.blockList || [];
     if (blockList.length === 0) {
         console.log("Blocklist is empty. Nothing to block.");
@@ -188,45 +188,67 @@ function startContinuousScanning() {
     });
 }
 
+// Helper function to log messages to the active tab's console from the popup
+async function logToActiveTabPageConsole(...args) {
+    try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0] && tabs[0].id) {
+            const tabId = tabs[0].id;
+            const preparedArgs = args.map(arg =>
+                (typeof arg === 'object' && arg !== null) ? JSON.stringify(arg, null, 2) : arg
+            );
+            // Add a prefix to distinguish from other logs, if desired
+            const prefixedArgs = ['[Forcefield Popup Tab Log]', ...preparedArgs]; 
+
+            await chrome.scripting.executeScript({
+                target: { tabId: tabId },
+                func: (...logs) => { console.log(...logs); },
+                args: prefixedArgs,
+            });
+        } else {
+            // Fallback to popup's own console if active tab can't be found
+            console.log('[Forcefield Popup Console Fallback]', ...args);
+        }
+    } catch (error) {
+        // Fallback for any other errors
+        console.error('[Forcefield Popup Console Fallback] Error logging to page:', error, 'Original args:', ...args);
+    }
+}
+
 async function startContinuousScanningLogic(tabId) {
-    // First, try to send the startObserving command.
-    // If the script is already injected and listening, this will succeed.
+    await logToActiveTabPageConsole(`POPUP_LOG: Attempting to start observer for tab ${tabId}. First attempt to send command.`);
     chrome.tabs.sendMessage(tabId, { command: "startObserving" }, async (response) => {
         if (chrome.runtime.lastError) {
-            // Error sending message: content script likely not injected or not listening.
-            console.warn('[Forcefield Popup] Failed to send startObserving, attempting to inject continuousScan.js:', chrome.runtime.lastError.message);
+            await logToActiveTabPageConsole(`POPUP_LOG: First attempt to send startObserving failed for tab ${tabId}: ${chrome.runtime.lastError.message}. Attempting to inject continuousScan.js.`);
+            await logToActiveTabPageConsole(`POPUP_LOG: Entering try block to inject script for tab ${tabId}.`);
             try {
                 await chrome.scripting.executeScript({
                     target: { tabId: tabId },
                     files: ['continuousScan.js']
                 });
-                // console.log('[Forcefield Popup] continuousScan.js injected.');
+                await logToActiveTabPageConsole(`POPUP_LOG: continuousScan.js injected or ensured for tab ${tabId}.`);
 
-                // After successful injection, send the startObserving command again.
-                chrome.tabs.sendMessage(tabId, { command: "startObserving" }, (responseAfterInjection) => {
+                await logToActiveTabPageConsole(`POPUP_LOG: Second attempt to send startObserving command for tab ${tabId}.`);
+                chrome.tabs.sendMessage(tabId, { command: "startObserving" }, async (responseAfterInjection) => {
                     if (chrome.runtime.lastError) {
-                        console.error('[Forcefield Popup] Error starting observer even after injection:', chrome.runtime.lastError.message);
+                        await logToActiveTabPageConsole(`POPUP_LOG: Error starting observer for tab ${tabId} even after injection: ${chrome.runtime.lastError.message}`);
                         updateScanningStatus(`Error: ${chrome.runtime.lastError.message}. Try reloading tab.`);
-                        // Revert isScanning state if observer cannot be started
                         chrome.storage.local.set({ isScanning: false }, () => {
-                            loadScanningState(); // Refresh UI
+                            loadScanningState();
                         });
                     } else {
-                        // console.log('[Forcefield Popup] Observer start command sent after injection, response:', responseAfterInjection);
-                        // Status update should come from content script via 'scanningStateChanged' message.
+                        await logToActiveTabPageConsole(`POPUP_LOG: Observer start command successfully sent to tab ${tabId} after injection. Response:`, responseAfterInjection);
                     }
                 });
             } catch (injectionError) {
-                console.error('[Forcefield Popup] Failed to inject continuousScan.js:', injectionError);
+                await logToActiveTabPageConsole(`POPUP_LOG: Failed to inject continuousScan.js for tab ${tabId}:`, injectionError);
                 updateScanningStatus(`Injection error: ${injectionError.message}. Try reloading tab.`);
-                // Revert isScanning state if injection fails
                 chrome.storage.local.set({ isScanning: false }, () => {
-                    loadScanningState(); // Refresh UI
+                    loadScanningState();
                 });
             }
         } else {
-            // console.log('[Forcefield Popup] Observer start command sent (script was already injected), response:', response);
-            // Status update should come from content script via 'scanningStateChanged' message.
+            await logToActiveTabPageConsole(`POPUP_LOG: Observer start command successfully sent to tab ${tabId} on first attempt. Response:`, response);
         }
     });
 }
@@ -279,7 +301,7 @@ function triggerPageBlock(blockListToUse) {
 }
 
 function loadBlockList() {
-  chrome.storage.sync.get(['blockList'], (result) => {
+  chrome.storage.local.get(['blockList'], (result) => {
     const blockList = result.blockList || [];
     displayBlockList(blockList);
   });
@@ -367,14 +389,14 @@ function addWord() {
     // }
 
 
-    chrome.storage.sync.get(['blockList'], (result) => {
+    chrome.storage.local.get(['blockList'], (result) => {
       const blockList = result.blockList || [];
       // Check if the word (text property) already exists
       if (!blockList.some(item => item.text.toLowerCase() === word.toLowerCase())) { // Case-insensitive check
         // Add as an object with the determined default level
         // blockList.push({ text: word, level: defaultLevel }); // <-- Reverted: Use fixed level 1
         blockList.push({ text: word, level: 1 });
-        chrome.storage.sync.set({ blockList }, () => {
+        chrome.storage.local.set({ blockList }, () => {
           // console.log(`Added "${word}" (level ${defaultLevel}) to blocklist.`); // <-- Reverted
           console.log(`Added "${word}" (level 1) to blocklist.`);
           displayBlockList(blockList); // Update display
@@ -389,10 +411,10 @@ function addWord() {
 }
 
 function removeWord(indexToRemove) {
-  chrome.storage.sync.get(['blockList'], (result) => {
+  chrome.storage.local.get(['blockList'], (result) => {
     const blockList = result.blockList || [];
     const removedItem = blockList.splice(indexToRemove, 1)[0]; // Remove item at index
-    chrome.storage.sync.set({ blockList }, () => {
+    chrome.storage.local.set({ blockList }, () => {
       console.log(`Removed "${removedItem.text}" from blocklist.`);
       displayBlockList(blockList); // Update display
     });
@@ -407,11 +429,11 @@ function updateLevel(index, newLevel) {
         loadBlockList(); // Reload to reset the view if clamping fails
         return;
     }
-    chrome.storage.sync.get(['blockList'], (result) => {
+    chrome.storage.local.get(['blockList'], (result) => {
         const blockList = result.blockList || [];
         if (blockList[index]) {
             blockList[index].level = newLevel;
-            chrome.storage.sync.set({ blockList }, () => {
+            chrome.storage.local.set({ blockList }, () => {
                 console.log(`Updated level for "${blockList[index].text}" to ${newLevel}.`);
                 // No need to call displayBlockList again, the input value is already updated visually.
                 // However, if clamping failed, a reload might be needed.
@@ -702,7 +724,6 @@ function extractNegativeTags(text) {
 // Modified addWord function to handle an array of suggestions
 // Make async to get tab URL for default level
 async function addSuggestedWords(suggestions, defaultLevelOverride = null, source = 'ai_manual') {
-    // Get current tab URL to determine default level IF not overridden
     let defaultLevelToUse = 1; 
     if (defaultLevelOverride !== null) {
         defaultLevelToUse = defaultLevelOverride;
@@ -711,16 +732,13 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
             const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
             if (tabs[0] && tabs[0].url) {
                 defaultLevelToUse = getDefaultLevelForSite(tabs[0].url);
-                // console.log(`[Forcefield AI - ${source}] Using default level ${defaultLevelToUse} for suggestions.`);
-            } else {
-                // console.warn(`[Forcefield AI - ${source}] Could not get active tab URL. Using level 1.`);
             }
         } catch (error) {
             console.error(`[Forcefield AI - ${source}] Error getting active tab for default level:`, error);
         }
     }
 
-    chrome.storage.sync.get(['blockList'], (result) => {
+    chrome.storage.local.get(['blockList'], (result) => {
         let blockList = result.blockList || [];
         let addedCount = 0;
         suggestions.forEach(word => {
@@ -735,16 +753,16 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
         });
 
         if (addedCount > 0) {
-            chrome.storage.sync.set({ blockList }, () => {
+            chrome.storage.local.set({ blockList }, () => {
                 console.log(`[Forcefield AI - ${source}] Added ${addedCount} new suggestions to the blocklist.`);
-                displayBlockList(blockList); // Update display
-                if (source !== 'ai_continuous') { // Avoid double alert for continuous scan
+                displayBlockList(blockList);
+                if (source !== 'ai_continuous') {
                     alert(`Added ${addedCount} AI suggestions to the blocklist.`);
                 }
             });
         } else {
              console.log(`[Forcefield AI - ${source}] No new suggestions were added to the list.`);
-             if (source !== 'ai_continuous') { // Avoid double alert
+             if (source !== 'ai_continuous') {
                 alert('AI analysis complete. No new suggestions were added (they might already exist).');
             }
         }
@@ -753,11 +771,10 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
 
 // New function to clear the entire blocklist
 function clearAllBlocks() {
-    // Optional: Add a confirmation dialog
     if (confirm('Are you sure you want to remove all blocked items?')) {
-        chrome.storage.sync.set({ blockList: [] }, () => {
+        chrome.storage.local.set({ blockList: [] }, () => {
             console.log('Blocklist cleared.');
-            displayBlockList([]); // Update display immediately
+            displayBlockList([]);
         });
     }
 }

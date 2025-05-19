@@ -199,7 +199,7 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
         defaultLevelToUse = getDefaultLevelForSite(tabUrl);
     }
 
-    const { blockList: currentBlockList } = await chrome.storage.sync.get(['blockList']);
+    const { blockList: currentBlockList } = await chrome.storage.local.get(['blockList']);
     let blockList = currentBlockList || [];
     let addedCount = 0;
     const newSuggestionsForLogging = [];
@@ -217,7 +217,7 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
     });
 
     if (addedCount > 0) {
-        await chrome.storage.sync.set({ blockList });
+        await chrome.storage.local.set({ blockList });
         console.log(`[Forcefield Background - ${source}] Added ${addedCount} new suggestions to the blocklist.`);
         chrome.runtime.sendMessage({ command: "blockListUpdated", newSuggestions: newSuggestionsForLogging, source: source }).catch(e => {}); 
 

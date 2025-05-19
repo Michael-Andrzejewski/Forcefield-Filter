@@ -94,13 +94,17 @@ function stopObserver() {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    console.log('[Forcefield Continuous Scan] Message received:', request.command);
     if (request.command === "startObserving") {
+        console.log('[Forcefield Continuous Scan] Received startObserving command.');
         startObserver();
         sendResponse({ status: "Observer starting" });
     } else if (request.command === "stopObserving") {
+        console.log('[Forcefield Continuous Scan] Received stopObserving command.');
         stopObserver();
         sendResponse({ status: "Observer stopping" });
     } else if (request.command === "queryObserverState") {
+        console.log('[Forcefield Continuous Scan] Received queryObserverState command. isObserving:', isObserving);
         sendResponse({ isObserving: isObserving });
     }
     return true; // Keep the message channel open for asynchronous response
