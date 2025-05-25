@@ -98,20 +98,37 @@ function getDefaultLevelForSite(url) {
 }
 
 // We need the actual function that does the blocking
-function actualContentBlockingFunction(blockListToUse) {
+function actualContentBlockingFunction(blockListToUse, debugMode) {
     function normalizeApostrophes(str) {
         if (!str) return str;
         return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'");
     }
 
-    console.log(`[Forcefield Content Blocker (from SW)] Starting scan for ${blockListToUse.length} words/phrases.`);
-    const allElements = document.body.getElementsByTagName('*');
-    let elementsHidden = 0;
     const hiddenMarker = 'hiddenByForcefield';
+    const debugHighlightClass = 'forcefield-debug-highlight';
+    const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
+
+    // First, reset all previously affected elements
+    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
+    previouslyAffected.forEach(el => {
+        el.style.display = '';
+        el.style.border = '';
+        el.style.backgroundColor = '';
+        el.classList.remove(debugHighlightClass);
+        delete el.dataset[hiddenMarker];
+        if (el.style.visibility === 'hidden' || el.style.display === 'none') {
+            el.style.visibility = 'revert';
+            el.style.display = 'revert';
+       }
+    });
+
+    console.log(`[Forcefield Content Blocker (from SW)] Starting scan for ${blockListToUse.length} words/phrases. Debug: ${debugMode}`);
+    const allElements = document.body.getElementsByTagName('*');
+    let elementsAffected = 0;
 
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
-        if (element.style.display === 'none' && !element.dataset[hiddenMarker]) {
+        if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
             continue;
         }
 
@@ -148,26 +165,37 @@ function actualContentBlockingFunction(blockListToUse) {
                 actualLevelsAscended++;
             }
 
-            if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement && elementToHide.style.display !== 'none') {
-                elementToHide.style.display = 'none';
-                elementToHide.dataset[hiddenMarker] = 'true';
-                elementsHidden++;
-            } else if (elementToHide && elementToHide.style.display === 'none' && elementToHide.dataset[hiddenMarker]) {
-                // Already hidden by us
+            if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
+                if (debugMode) {
+                    if (!elementToHide.classList.contains(debugHighlightClass)) {
+                        elementToHide.style.cssText += debugHighlightStyle;
+                        elementToHide.classList.add(debugHighlightClass);
+                        elementToHide.dataset[hiddenMarker] = 'debug';
+                        elementsAffected++;
+                    }
+                } else {
+                    if (elementToHide.style.display !== 'none') {
+                        elementToHide.style.display = 'none';
+                        elementToHide.dataset[hiddenMarker] = 'true';
+                        elementsAffected++;
+                    }
+                }
+            } else if (elementToHide && (elementToHide.style.display === 'none' || elementToHide.classList.contains(debugHighlightClass))) {
+                // Already hidden or highlighted by us
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
-                 console.warn(`[Forcefield Content Blocker (from SW)] Avoided hiding BODY/HTML for "${matchedBlockItem.text}".`);
+                 console.warn(`[Forcefield Content Blocker (from SW)] Avoided affecting BODY/HTML for "${matchedBlockItem.text}".`);
             }
         }
     }
-    if (elementsHidden > 0) {
-        console.log(`[Forcefield Content Blocker (from SW)] Scan finished. Hid ${elementsHidden} elements.`);
+    if (elementsAffected > 0) {
+        console.log(`[Forcefield Content Blocker (from SW)] Scan finished. ${debugMode ? 'Highlighted' : 'Hid'} ${elementsAffected} elements.`);
     } else {
-        console.log(`[Forcefield Content Blocker (from SW)] Scan finished. No new elements hidden.`);
+        console.log(`[Forcefield Content Blocker (from SW)] Scan finished. No new elements ${debugMode ? 'highlighted' : 'hidden'}.`);
     }
 }
 
 // Centralized function to trigger the blocking on the page
-function triggerPageBlock(tabId, blockList) {
+function triggerPageBlock(tabId, blockList, debugMode) {
     if (!tabId) {
         console.error("[Forcefield Background] triggerPageBlock: Missing tabId.");
         return;
@@ -175,7 +203,7 @@ function triggerPageBlock(tabId, blockList) {
     chrome.scripting.executeScript({
         target: { tabId: tabId },
         func: actualContentBlockingFunction,
-        args: [blockList]
+        args: [blockList, debugMode]
     }).catch(err => console.error(`[Forcefield Background] Error in executeScript for triggerPageBlock on tab ${tabId}:`, err));
 }
 
@@ -251,11 +279,12 @@ async function processNewContentWithAIBackground(text, tabId) {
     const signal = currentAiCallAbortController.signal;
 
     try {
-        const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning] = await Promise.all([
+        const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning, storageDebugMode] = await Promise.all([
             chrome.storage.sync.get(['customSystemPrompt']),
             chrome.storage.sync.get(['customUserPromptPrefix']),
             chrome.storage.sync.get(['selectedAiModel']),
-            chrome.storage.local.get(['isScanning']) // Check if scanning is still globally active
+            chrome.storage.local.get(['isScanning']), // Check if scanning is still globally active
+            chrome.storage.local.get(['debugMode']) // Get debugMode state
         ]);
 
         if (!storageIsScanning.isScanning) {
@@ -322,9 +351,10 @@ async function processNewContentWithAIBackground(text, tabId) {
         logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Extracted suggestions:', suggestions);
 
         if (suggestions.length > 0) {
+            const currentDebugMode = storageDebugMode.debugMode || false; // Use fetched debugMode
             const updatedBlockList = await addSuggestedWords(suggestions, null, 'ai_continuous_bg', tabId);
             if (updatedBlockList && updatedBlockList.length > 0) {
-                triggerPageBlock(tabId, updatedBlockList);
+                triggerPageBlock(tabId, updatedBlockList, currentDebugMode); // Pass currentDebugMode
             }
             chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Processed: ${suggestions.length} new blocks. Re-blocking.`}).catch(e => {});
         } else {

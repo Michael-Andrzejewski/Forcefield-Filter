@@ -8,7 +8,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     let isObserving = false; // This will be controlled by messages
     const DEBOUNCE_DELAY = 1000; // 1 second
     const MIN_NODE_TEXT_LENGTH = 5; // Minimum length for a single node's text to be considered
-    const MIN_COMBINED_TEXT_LENGTH = 1000; // Minimum length for the combined text to be sent to AI
+    const MIN_COMBINED_TEXT_LENGTH = 50; // Minimum length for the combined text to be sent to AI
     const MIN_ALPHA_RATIO = 0.7; // Minimum ratio of alphabetic characters in the text
 
     function canSendMessage() {

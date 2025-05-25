@@ -14,6 +14,7 @@ const aiModelSelect = document.getElementById('aiModelSelect');
 const startScanningButton = document.getElementById('startScanningButton');
 const stopScanningButton = document.getElementById('stopScanningButton');
 const scanningStatus = document.getElementById('scanningStatus');
+const debugModeCheckbox = document.getElementById('debugModeCheckbox');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Kept for the manual "Suggest Blocks (AI)" feature in popup.js
@@ -62,6 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserPromptPrefix();
     loadAiModelSelection();
     loadScanningState(); // Load and set initial scanning state
+    loadDebugModeState(); // Added
 });
 
 // Add word to blocklist
@@ -74,13 +76,14 @@ wordInput.addEventListener('keypress', (e) => {
 
 // Trigger content script
 blockButton.addEventListener('click', () => {
-  chrome.storage.local.get(['blockList'], (result) => {
+  chrome.storage.local.get(['blockList', 'debugMode'], (result) => {
     const blockList = result.blockList || [];
+    const debugMode = result.debugMode || false;
     if (blockList.length === 0) {
         console.log("Blocklist is empty. Nothing to block.");
         return;
     }
-    triggerPageBlock(blockList);
+    triggerPageBlock(blockList, debugMode);
   });
 });
 
@@ -100,6 +103,9 @@ resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
 
 // Add listener for AI Model selection change
 aiModelSelect.addEventListener('change', saveAiModelSelection);
+
+// Add listener for Debug Mode checkbox
+debugModeCheckbox.addEventListener('change', handleDebugModeChange);
 
 // Add listeners for Scanning buttons
 startScanningButton.addEventListener('click', startContinuousScanning);
@@ -349,13 +355,13 @@ function stopContinuousScanning() {
 }
 
 // Helper to trigger the main blocking script
-function triggerPageBlock(blockListToUse) {
+function triggerPageBlock(blockListToUse, debugMode) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
             chrome.scripting.executeScript({
                 target: { tabId: tabs[0].id },
-                func: injectContentScript, // This is the existing function from original script
-                args: [blockListToUse]
+                func: injectContentScript,
+                args: [blockListToUse, debugMode]
             }).catch(err => console.error("[Forcefield] Error injecting/running main block script: ", err));
         } else {
             console.error("[Forcefield] Could not get active tab ID to block content.");
@@ -508,8 +514,27 @@ function updateLevel(index, newLevel) {
 }
 
 // This function will be injected into the content page
-function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.', level: ...}]
-    // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse); // Less verbose
+function injectContentScript(blockListToUse, debugMode) {
+    // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse, "Debug Mode:", debugMode);
+
+    const hiddenMarker = 'hiddenByForcefield';
+    const debugHighlightClass = 'forcefield-debug-highlight'; // For potential CSS targeting
+    const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
+
+    // First, reset all previously affected elements by this script
+    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
+    previouslyAffected.forEach(el => {
+        el.style.display = ''; // Reset display
+        el.style.border = ''; // Reset border
+        el.style.backgroundColor = ''; // Reset background
+        el.classList.remove(debugHighlightClass);
+        delete el.dataset[hiddenMarker];
+        // Attempt to revert any other inline styles that might have been set for visibility
+        if (el.style.visibility === 'hidden' || el.style.display === 'none') {
+             el.style.visibility = 'revert';
+             el.style.display = 'revert';
+        }
+    });
 
     // Helper function to normalize different apostrophe/single quote characters
     function normalizeApostrophes(str) {
@@ -518,17 +543,21 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.',
     }
 
     function blockListedContent(blockList) {
-        console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases.`);
+        console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases. Debug: ${debugMode}`);
         const allElements = document.body.getElementsByTagName('*');
-        let elementsHidden = 0;
-        const hiddenMarker = 'hiddenByForcefield'; // Use a constant for the dataset key
+        let elementsAffected = 0;
+        // const hiddenMarker = 'hiddenByForcefield'; // Already defined above
 
         // Iterate backwards through all elements
         for (let i = allElements.length - 1; i >= 0; i--) {
             const element = allElements[i];
 
-            // Skip elements that are already hidden by means other than this script
-            if (element.style.display === 'none' && !element.dataset[hiddenMarker]) {
+            // Skip elements that are already hidden by means other than this script if not in debug mode
+            // if (!debugMode && element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
+            //     continue;
+            // }
+            // Simpler skip: if it's display: none and we didn't do it, skip. If debug, we might unhide.
+            if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
                 continue;
             }
 
@@ -559,7 +588,6 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.',
                 }
             }
 
-
             // If a match was found in the direct text nodes of this element
             if (foundMatch && matchedBlockItem) { // Need both element and the block item details
                 const levelsToAscend = matchedBlockItem.level;
@@ -579,28 +607,39 @@ function injectContentScript(blockListToUse) { // blockListToUse is [{text: '.',
                     actualLevelsAscended++;
                 }
 
-
                 // Check if the target is valid and not already hidden by this script
                 // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
-                if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement && elementToHide.style.display !== 'none') {
+                if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
 
-                    // Hide the element and mark it
-                    // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
-                    elementToHide.style.display = 'none';
-                    elementToHide.dataset[hiddenMarker] = 'true';
-                    elementsHidden++;
-                } else if (elementToHide && elementToHide.style.display === 'none' && elementToHide.dataset[hiddenMarker]) {
-                    // Element already hidden by us, do nothing.
+                    // Hide the element and mark it or highlight it
+                    if (debugMode) {
+                        if (!elementToHide.classList.contains(debugHighlightClass)) {
+                            // console.log(`[Forcefield Debug] Highlighting element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide);
+                            elementToHide.style.cssText += debugHighlightStyle; // Append to existing styles
+                            elementToHide.classList.add(debugHighlightClass);
+                            elementToHide.dataset[hiddenMarker] = 'debug'; // Mark as affected by debug
+                            elementsAffected++;
+                        }
+                    } else {
+                        if (elementToHide.style.display !== 'none') {
+                            // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
+                            elementToHide.style.display = 'none';
+                            elementToHide.dataset[hiddenMarker] = 'true'; // Mark as hidden
+                            elementsAffected++;
+                        }
+                    }
+                } else if (elementToHide && (elementToHide.style.display === 'none' || elementToHide.classList.contains(debugHighlightClass))) {
+                    // Element already hidden by us, or highlighted by us. Do nothing.
                 } else if (elementToHide === document.body || elementToHide === document.documentElement) {
                      // Log if we still somehow ended up targeting body/html (e.g., original element was body/html and level was 0)
-                     console.warn(`[Forcefield] Avoided hiding BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
+                     console.warn(`[Forcefield] Avoided affecting BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
                 }
             }
         }
-        if (elementsHidden > 0) {
-            console.log(`[Forcefield] Scan finished. Hid ${elementsHidden} elements/ancestors.`);
+        if (elementsAffected > 0) {
+            console.log(`[Forcefield] Scan finished. ${debugMode ? 'Highlighted' : 'Hid'} ${elementsAffected} elements/ancestors.`);
         } else {
-            console.log(`[Forcefield] Scan finished. No new elements hidden.`);
+            console.log(`[Forcefield] Scan finished. No new elements ${debugMode ? 'highlighted' : 'hidden'}.`);
         }
     }
 
@@ -932,6 +971,27 @@ function saveAiModelSelection() {
     } else {
         console.error(`[Forcefield AI] Attempted to save invalid model: ${selectedModel}`);
     }
+}
+
+// New function to load debug mode state
+function loadDebugModeState() {
+    chrome.storage.local.get(['debugMode'], (result) => {
+        debugModeCheckbox.checked = result.debugMode || false;
+    });
+}
+
+// New function to save debug mode state and re-trigger blocking
+function handleDebugModeChange() {
+    const isDebugMode = debugModeCheckbox.checked;
+    chrome.storage.local.set({ debugMode: isDebugMode }, () => {
+        console.log(`[Forcefield] Debug mode set to: ${isDebugMode}`);
+        // Re-trigger blocking on the current page to apply the new mode
+        chrome.storage.local.get(['blockList'], (result) => {
+            const blockList = result.blockList || [];
+            // No need to re-trigger if blocklist is empty, but it's harmless
+            triggerPageBlock(blockList, isDebugMode);
+        });
+    });
 }
 
 // Initial load is handled by DOMContentLoaded
