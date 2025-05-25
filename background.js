@@ -385,10 +385,68 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             }
         }
         sendResponse({status: "Background aware of scan stop"});
+    } else if (request.command === "getActiveScanTabId") {
+        // New command to get which tab is actively being scanned
+        sendResponse({activeScanTabId: activeScanTabId});
+    } else if (request.command === "getGlobalScanningState") {
+        // Command from content script to check if scanning should be active
+        chrome.storage.local.get(['isScanning'], (result) => {
+            sendResponse({isScanningGlobally: result.isScanning || false});
+        });
+        return true; // Keep channel open for async response
+    } else if (request.command === "getCurrentTabId") {
+        // Command from content script to get its own tab ID
+        if (sender.tab && sender.tab.id) {
+            sendResponse({tabId: sender.tab.id});
+        } else {
+            sendResponse({tabId: null});
+        }
     }
     // Add other message handlers if needed, e.g., for status updates from content script
 
     return true; // Keep channel open for other async responses if any other handlers need it
+});
+
+// Listen for tab activation changes
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+    const newTabId = activeInfo.tabId;
+    console.log(`[Forcefield Background] Tab activated: ${newTabId}`);
+
+    const { isScanning } = await chrome.storage.local.get(['isScanning']);
+    if (!isScanning) {
+        // console.log('[Forcefield Background] Tab activated, but global scanning is off. No action.');
+        return;
+    }
+
+    const previousActiveScanTabId = activeScanTabId;
+
+    if (previousActiveScanTabId && previousActiveScanTabId !== newTabId) {
+        // Stop observer on the previously active tab
+        console.log(`[Forcefield Background] Attempting to stop observer on old tab ${previousActiveScanTabId}`);
+        chrome.tabs.sendMessage(previousActiveScanTabId, { command: "stopObserving" })
+            .catch(err => console.warn(`[Forcefield Background] Error sending stopObserving to old tab ${previousActiveScanTabId}: ${err.message}. Tab might be closed.`));
+    }
+
+    // Update activeScanTabId to the new tab
+    activeScanTabId = newTabId;
+    console.log(`[Forcefield Background] Active scan tab updated to: ${activeScanTabId}`);
+
+    // Attempt to start observer on the newly activated tab
+    // We need to ensure the content script is there first.
+    try {
+        await chrome.scripting.executeScript({
+            target: { tabId: newTabId },
+            files: ['continuousScan.js']
+        });
+        console.log(`[Forcefield Background] Ensured content script on new tab ${newTabId}, sending startObserving.`);
+        chrome.tabs.sendMessage(newTabId, { command: "startObserving" })
+            .catch(err => console.warn(`[Forcefield Background] Error sending startObserving to new tab ${newTabId}: ${err.message}`));
+    } catch (err) {
+        console.warn(`[Forcefield Background] Failed to inject content script into new tab ${newTabId} on activation: ${err.message}. This can happen on special pages (e.g. chrome://).`);
+    }
+    
+    // Update popup status if it were open (though it usually closes on tab switch)
+    chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Scanning tab ${newTabId}...`}).catch(e => {});
 });
 
 console.log("[Forcefield Background] Service worker started."); 

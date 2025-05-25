@@ -131,13 +131,60 @@ function updateScanningStatus(statusText) {
 
 async function loadScanningState() {
     chrome.storage.local.get(['isScanning'], (result) => {
-        const isScanning = result.isScanning || false;
-        if (isScanning) {
+        const isScanningGlobally = result.isScanning || false;
+
+        if (isScanningGlobally) {
             startScanningButton.style.display = 'none';
             stopScanningButton.style.display = 'inline-block';
-            updateScanningStatus('Scanning active (popup reloaded).');
-            // Ensure content script is aware, or re-initiate if necessary
-            pingContentScriptObserverState();
+            updateScanningStatus('Checking scanning state...');
+
+            chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+                if (!(tabs[0] && tabs[0].id)) {
+                    updateScanningStatus("Error: Couldn't get current tab ID.");
+                    return;
+                }
+                const currentTabId = tabs[0].id;
+
+                chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, async (response) => {
+                    if (chrome.runtime.lastError) {
+                        console.warn('[Forcefield Popup] Error getting activeScanTabId:', chrome.runtime.lastError.message);
+                        // Assume we need to start on current tab if background doesn't know
+                        updateScanningStatus('Starting scan on current tab (unknown previous)...');
+                        startContinuousScanningLogic(currentTabId);
+                        chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: currentTabId })
+                            .catch(err => console.warn("[Forcefield Popup] Error notifying background (1):", err));
+                        return;
+                    }
+
+                    const previousActiveScanTabId = response && response.activeScanTabId;
+
+                    if (previousActiveScanTabId === currentTabId) {
+                        // Popup opened on the tab that should already be scanning.
+                        // Let's verify if the content script's observer is actually running.
+                        // console.log(`[Forcefield Popup] Current tab ${currentTabId} is already the active scan tab. Verifying observer state.`);
+                        pingContentScriptObserverState(); // This will update status or restart if needed
+                    } else {
+                        // Scanning needs to be transferred to the current tab.
+                        updateScanningStatus(`Transferring scan to current tab ${currentTabId}...`);
+                        if (previousActiveScanTabId) {
+                            // Stop scanning on the previous tab
+                            console.log(`[Forcefield Popup] Sending stopObserving to previous tab ${previousActiveScanTabId}`);
+                            chrome.tabs.sendMessage(previousActiveScanTabId, { command: "stopObserving" }, (stopResponse) => {
+                                if (chrome.runtime.lastError) {
+                                    console.warn(`[Forcefield Popup] Could not stop observer in previous tab ${previousActiveScanTabId}:`, chrome.runtime.lastError.message);
+                                } else {
+                                    console.log(`[Forcefield Popup] stopObserving response from ${previousActiveScanTabId}:`, stopResponse);
+                                }
+                            });
+                        }
+                        
+                        // Start scanning on the current tab
+                        startContinuousScanningLogic(currentTabId);
+                        chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: currentTabId })
+                            .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan transfer:", err));
+                    }
+                });
+            });
         } else {
             startScanningButton.style.display = 'inline-block';
             stopScanningButton.style.display = 'none';
@@ -149,20 +196,30 @@ async function loadScanningState() {
 async function pingContentScriptObserverState() {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
-            chrome.tabs.sendMessage(tabs[0].id, { command: "queryObserverState" }, (response) => {
+            const tabId = tabs[0].id;
+            chrome.tabs.sendMessage(tabId, { command: "queryObserverState" }, (response) => {
                 if (chrome.runtime.lastError) {
-                    // console.warn('[Forcefield Popup] Could not query content script state. It might not be injected yet.', chrome.runtime.lastError.message);
-                    updateScanningStatus('Error: Content script unreachable. Try reloading tab or restarting scan.');
-                    // Potentially force stop the scanning state in storage if content script is persistently unavailable
-                    // chrome.storage.local.set({ isScanning: false }); 
-                    // loadScanningState(); // and refresh UI
+                    // Content script might not be there, or tab is protected.
+                    console.warn(`[Forcefield Popup] pingContentScriptObserverState: Content script unreachable on tab ${tabId}. Attempting to start scanning. Error:`, chrome.runtime.lastError.message);
+                    updateScanningStatus('Content script issue. Restarting scan...');
+                    startContinuousScanningLogic(tabId); // Attempt to start/inject
+                    chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId })
+                         .catch(err => console.warn("[Forcefield Popup] Error notifying background (ping issue):", err));
                 } else if (response && response.isObserving) {
-                    updateScanningStatus('Scanning active.');
+                    updateScanningStatus('Scanning active on this tab.');
+                     // Ensure background knows this is the active tab
+                    chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId })
+                        .catch(err => console.warn("[Forcefield Popup] Error notifying background (ping success):", err));
                 } else {
-                     updateScanningStatus('Scanning was active, but observer stopped. Restarting...');
-                     startContinuousScanningLogic(tabs[0].id); // Attempt to restart
+                    // Observer is not running, but should be.
+                    updateScanningStatus('Observer stopped unexpectedly. Restarting scan...');
+                    startContinuousScanningLogic(tabId);
+                     chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId })
+                        .catch(err => console.warn("[Forcefield Popup] Error notifying background (ping restart):", err));
                 }
             });
+        } else {
+            updateScanningStatus("Error: Couldn't get current tab for ping.");
         }
     });
 }
@@ -254,32 +311,38 @@ async function startContinuousScanningLogic(tabId) {
 }
 
 function stopContinuousScanning() {
-    // Abort controller logic for popup-initiated AI calls (like manual suggest) should remain if it exists.
-    // The currentAiCallAbortController here was for the popup's own AI calls.
-    // Background.js has its own controller now.
-
     chrome.storage.local.set({ isScanning: false }, () => {
         startScanningButton.style.display = 'inline-block';
         stopScanningButton.style.display = 'none';
         updateScanningStatus('Stopping scan...');
 
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-            if (tabs[0] && tabs[0].id) {
-                // Notify content script to stop observing
-                chrome.tabs.sendMessage(tabs[0].id, { command: "stopObserving" }, (response) => {
+        // First, get the active scan tab from background
+        chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.error('[Forcefield Popup] Error getting active scan tab:', chrome.runtime.lastError.message);
+                updateScanningStatus('Error stopping scan');
+                return;
+            }
+            
+            const activeScanTabId = response && response.activeScanTabId;
+            
+            if (activeScanTabId) {
+                // Stop the observer in the actively scanning tab
+                chrome.tabs.sendMessage(activeScanTabId, { command: "stopObserving" }, (response) => {
                     if (chrome.runtime.lastError) {
-                        console.error('[Forcefield Popup] Error stopping observer in content script:', chrome.runtime.lastError.message);
-                        updateScanningStatus(`Error stopping observer: ${chrome.runtime.lastError.message}`);
-                    } else {
-                        // console.log('[Forcefield Popup] Observer stop command sent to content script.');
+                        console.warn('[Forcefield Popup] Could not stop observer in tab:', activeScanTabId, chrome.runtime.lastError.message);
+                        // Continue anyway - the tab might be closed
                     }
                 });
-                // Notify background script that scanning has stopped for this tab
-                chrome.runtime.sendMessage({ command: "stopContinuousScanBG", tabId: tabs[0].id })
+                
+                // Notify background script
+                chrome.runtime.sendMessage({ command: "stopContinuousScanBG", tabId: activeScanTabId })
                     .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan stop:", err));
+                
+                updateScanningStatus('Scanning stopped.');
             } else {
-                console.error("[Forcefield] Could not get active tab ID to stop scanning.");
-                updateScanningStatus('Error: No active tab found to stop.');
+                console.warn("[Forcefield Popup] No active scan tab found to stop.");
+                updateScanningStatus('No active scan to stop.');
             }
         });
     });
