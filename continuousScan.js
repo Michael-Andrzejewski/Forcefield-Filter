@@ -1,244 +1,153 @@
-// Ensure the script only initializes once per page context
-if (typeof window.forcefieldObserverInitialized === 'undefined') {
-    window.forcefieldObserverInitialized = true;
+// Simplified continuous scanning
+if (!window.forcefieldScannerInitialized) {
+    window.forcefieldScannerInitialized = true;
 
-    let observer = null;
-    let debounceTimer = null;
-    let newTextBuffer = []; // Collects text from mutations
-    let isObserving = false; // This will be controlled by messages
-    const DEBOUNCE_DELAY = 1000; // 1 second
-    const MIN_NODE_TEXT_LENGTH = 5; // Minimum length for a single node's text to be considered
-    const MIN_COMBINED_TEXT_LENGTH = 50; // Minimum length for the combined text to be sent to AI
-    const MIN_ALPHA_RATIO = 0.7; // Minimum ratio of alphabetic characters in the text
-
-    function canSendMessage() {
-        return chrome.runtime && chrome.runtime.sendMessage;
-    }
-
-    // Helper function to check if text has a minimum ratio of alphabetic characters
-    function hasSufficientAlphaCharacters(text, minRatio) {
-        if (!text || text.length === 0) return false;
-        const alphaChars = text.match(/[a-zA-Z]/g);
-        if (!alphaChars) return false;
-        return (alphaChars.length / text.length) >= minRatio;
-    }
-
-    function handleMutations(mutationsList, obs) {
-        if (!isObserving) return; // Check against the script-local isObserving
-
-        let significantChangeDetected = false;
-        for (const mutation of mutationsList) {
-            if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
-                mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (node.dataset.hiddenByForcefield || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') {
-                            return;
-                        }
-                        const textContent = node.innerText || node.textContent || '';
-                        const trimmedText = textContent.trim();
-
-                        if (trimmedText.length >= MIN_NODE_TEXT_LENGTH && hasSufficientAlphaCharacters(trimmedText, MIN_ALPHA_RATIO)) {
-                            newTextBuffer.push(trimmedText);
-                            significantChangeDetected = true;
-                        }
-                    } else if (node.nodeType === Node.TEXT_NODE) {
-                        const textContent = node.nodeValue || '';
-                        const trimmedText = textContent.trim();
-                        if (trimmedText.length >= MIN_NODE_TEXT_LENGTH && hasSufficientAlphaCharacters(trimmedText, MIN_ALPHA_RATIO)) {
-                            newTextBuffer.push(trimmedText);
-                            significantChangeDetected = true;
-                        }
-                    }
-                });
-            }
+    class ContinuousScanner {
+        constructor() {
+            this.observer = null;
+            this.isActive = false;
+            this.textBuffer = [];
+            this.debounceTimer = null;
+            this.config = {
+                debounceDelay: 1000,
+                minTextLength: 50,
+                minAlphaRatio: 0.7
+            };
+            
+            this.setupMessageHandlers();
+            this.setupVisibilityHandler();
+            this.checkInitialState();
         }
 
-        if (significantChangeDetected) {
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
-                if (newTextBuffer.length > 0) {
-                    const combinedText = newTextBuffer.join('\n\n').trim();
-                    newTextBuffer = []; 
-
-                    if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
-                        console.log('[Forcefield Continuous Scan] Debounced new text meeting criteria:', combinedText.substring(0,200) + '...');
-                        if (canSendMessage()) {
-                            chrome.runtime.sendMessage({ command: "newContentDetected", text: combinedText }, (response) => {
-                                if (chrome.runtime.lastError) {
-                                     console.warn('[Forcefield CS] Error sending newContentDetected:', chrome.runtime.lastError.message);
-                                }
-                            });
-                        } else {
-                            console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected.');
-                        }
-                    } else {
-                        console.log('[Forcefield Continuous Scan] Debounced text too short, numeric, or insignificant, skipping AI call. Length:', combinedText.length, 'Text:', combinedText.substring(0,100) + '...');
-                    }
-                } else {
-                    newTextBuffer = []; 
-                }
-            }, DEBOUNCE_DELAY);
-        }
-    }
-
-    function startObserverInternal() {
-        if (observer) { 
-            observer.disconnect();
-            observer = null; 
-        }
-        isObserving = true;
-        newTextBuffer = []; 
-        clearTimeout(debounceTimer);
-
-        observer = new MutationObserver(handleMutations);
-        observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-        });
-        console.log('[Forcefield CS] Observer started/restarted.');
-    }
-
-    function stopObserverInternal() {
-        isObserving = false; 
-        if (observer) {
-            observer.disconnect();
-            observer = null;
-        }
-        clearTimeout(debounceTimer);
-        newTextBuffer = [];
-        console.log('[Forcefield CS] Observer stopped.');
-    }
-
-    if (!window.forcefieldMessageListenerAdded) {
-        if (canSendMessage()) { // Guard the listener attachment itself
+        setupMessageHandlers() {
             chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-                if (!canSendMessage()) {
-                    console.warn("[Forcefield CS] Context invalidated during message handling.");
-                    return false; // Indicate listener should be removed or error occurred
+                const handlers = {
+                    startObserving: () => this.start(),
+                    stopObserving: () => this.stop(),
+                    queryObserverState: () => ({ isObserving: this.isActive, initialized: true })
+                };
+
+                const handler = handlers[request.command];
+                if (handler) {
+                    sendResponse(handler());
+                    return true;
                 }
-                if (request.command === "startObserving") {
-                    console.log('[Forcefield CS] Received startObserving command.');
-                    startObserverInternal();
-                    sendResponse({ status: "Observer starting in CS" });
-                } else if (request.command === "stopObserving") {
-                    console.log('[Forcefield CS] Received stopObserving command.');
-                    stopObserverInternal();
-                    sendResponse({ status: "Observer stopping in CS" });
-                } else if (request.command === "queryObserverState") {
-                    sendResponse({ isObserving: isObserving, initialized: true });
-                }
-                return true; 
             });
-            window.forcefieldMessageListenerAdded = true;
-        } else {
-            console.warn("[Forcefield CS] Could not add message listener, context invalidated.");
+        }
+
+        setupVisibilityHandler() {
+            document.addEventListener('visibilitychange', async () => {
+                if (document.visibilityState === 'visible') {
+                    const state = await this.getGlobalState();
+                    if (state.isScanning && state.isActiveTab) {
+                        this.start();
+                    } else {
+                        this.stop();
+                    }
+                }
+            });
+        }
+
+        async getGlobalState() {
+            try {
+                const [globalState, activeTab, currentTab] = await Promise.all([
+                    chrome.runtime.sendMessage({ command: "getGlobalScanningState" }),
+                    chrome.runtime.sendMessage({ command: "getActiveScanTabId" }),
+                    chrome.runtime.sendMessage({ command: "getCurrentTabId" })
+                ]);
+
+                return {
+                    isScanning: globalState?.isScanningGlobally || false,
+                    isActiveTab: activeTab?.activeScanTabId === currentTab?.tabId
+                };
+            } catch {
+                return { isScanning: false, isActiveTab: false };
+            }
+        }
+
+        async checkInitialState() {
+            const state = await this.getGlobalState();
+            if (state.isScanning && state.isActiveTab) {
+                this.start();
+            }
+        }
+
+        start() {
+            if (this.isActive) return;
+            
+            this.stop(); // Clean slate
+            this.isActive = true;
+            this.textBuffer = [];
+            
+            this.observer = new MutationObserver(this.handleMutations.bind(this));
+            this.observer.observe(document.body, { childList: true, subtree: true });
+            
+            console.log('[Forcefield Scanner] Started');
+            return { status: "Observer started" };
+        }
+
+        stop() {
+            this.isActive = false;
+            this.observer?.disconnect();
+            this.observer = null;
+            clearTimeout(this.debounceTimer);
+            this.textBuffer = [];
+            
+            console.log('[Forcefield Scanner] Stopped');
+            return { status: "Observer stopped" };
+        }
+
+        handleMutations(mutations) {
+            if (!this.isActive) return;
+
+            const newText = mutations
+                .flatMap(m => Array.from(m.addedNodes))
+                .filter(node => this.isValidNode(node))
+                .map(node => this.extractText(node))
+                .filter(text => this.isValidText(text));
+
+            if (newText.length > 0) {
+                this.textBuffer.push(...newText);
+                this.debounceProcess();
+            }
+        }
+
+        isValidNode(node) {
+            if (node.nodeType === Node.TEXT_NODE) return true;
+            if (node.nodeType === Node.ELEMENT_NODE) {
+                return !node.dataset?.hiddenByForcefield && 
+                       !['SCRIPT', 'STYLE'].includes(node.tagName);
+            }
+            return false;
+        }
+
+        extractText(node) {
+            const text = (node.innerText || node.textContent || node.nodeValue || '').trim();
+            return text;
+        }
+
+        isValidText(text) {
+            if (text.length < 5) return false;
+            const alphaChars = text.match(/[a-zA-Z]/g);
+            return alphaChars && (alphaChars.length / text.length) >= this.config.minAlphaRatio;
+        }
+
+        debounceProcess() {
+            clearTimeout(this.debounceTimer);
+            this.debounceTimer = setTimeout(() => {
+                const combinedText = this.textBuffer.join('\n\n').trim();
+                this.textBuffer = [];
+
+                if (combinedText.length >= this.config.minTextLength && this.isValidText(combinedText)) {
+                    chrome.runtime.sendMessage({ 
+                        command: "newContentDetected", 
+                        text: combinedText 
+                    }).catch(() => {}); // Silent fail
+                }
+            }, this.config.debounceDelay);
         }
     }
 
-    if(!window.forcefieldVisibilityListenerAdded) {
-        document.addEventListener('visibilitychange', () => {
-            if (!canSendMessage()) {
-                console.warn("[Forcefield CS] Context invalidated before visibility change handling.");
-                return;
-            }
-            if (document.visibilityState === 'visible') {
-                chrome.runtime.sendMessage({ command: "getGlobalScanningState" }, (globalStateResponse) => {
-                    if (chrome.runtime.lastError) {
-                        console.warn('[Forcefield CS] Visibility: Error querying global state:', chrome.runtime.lastError.message); return;
-                    }
-                    if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getGlobalScanningState."); return; }
-
-                    if (globalStateResponse && globalStateResponse.isScanningGlobally) {
-                        chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, (activeTabResponse) => {
-                            if (chrome.runtime.lastError) {
-                                console.warn('[Forcefield CS] Visibility: Error getting active tab:', chrome.runtime.lastError.message); return;
-                            }
-                            if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getActiveScanTabId."); return; }
-
-                            chrome.runtime.sendMessage({ command: "getCurrentTabId" }, (currentTabResponse) => {
-                                if (chrome.runtime.lastError || !currentTabResponse || !currentTabResponse.tabId) {
-                                    console.warn('[Forcefield CS] Visibility: Error getting current tab ID'); return;
-                                }
-                                if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getCurrentTabId."); return; }
-
-                                const currentTabId = currentTabResponse.tabId;
-                                const activeScanTabIdFromBg = activeTabResponse && activeTabResponse.activeScanTabId;
-                                if (activeScanTabIdFromBg === currentTabId) {
-                                    if (!isObserving) {
-                                        console.log('[Forcefield CS] Visibility: Tab is active, starting observer.');
-                                        startObserverInternal();
-                                    }
-                                } else {
-                                    if (isObserving) {
-                                        console.log('[Forcefield CS] Visibility: Tab not active scan tab, stopping observer.');
-                                        stopObserverInternal();
-                                    }
-                                }
-                            });
-                        });
-                    } else { 
-                        if (isObserving) {
-                            console.log('[Forcefield CS] Visibility: Global scan off, stopping observer.');
-                            stopObserverInternal();
-                        }
-                    }
-                });
-            }
-        });
-        window.forcefieldVisibilityListenerAdded = true;
-    }
-    
-    if (!isObserving) { 
-        if (canSendMessage()) {
-            chrome.runtime.sendMessage({ command: "getGlobalScanningState" }, (globalStateResponse) => {
-                if (chrome.runtime.lastError) {
-                    console.warn('[Forcefield CS] Initial: Error querying global state:', chrome.runtime.lastError.message); return;
-                }
-                if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getGlobalScanningState."); return; }
-
-                if (globalStateResponse && globalStateResponse.isScanningGlobally) {
-                    chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, (activeTabResponse) => {
-                        if (chrome.runtime.lastError) {
-                            console.warn('[Forcefield CS] Initial: Error getting active tab:', chrome.runtime.lastError.message); return;
-                        }
-                        if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getActiveScanTabId."); return; }
-
-                        chrome.runtime.sendMessage({ command: "getCurrentTabId" }, (currentTabResponse) => {
-                            if (chrome.runtime.lastError || !currentTabResponse || !currentTabResponse.tabId) {
-                                console.warn('[Forcefield CS] Initial: Error getting current tab ID'); return;
-                            }
-                            if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getCurrentTabId."); return; }
-
-                            if (activeTabResponse && activeTabResponse.activeScanTabId === currentTabResponse.tabId) {
-                                console.log('[Forcefield CS] Initial: This tab should be active. Starting observer.');
-                                startObserverInternal();
-                            } 
-                        });
-                    });
-                } 
-            });
-        } else {
-            console.warn("[Forcefield CS] Context invalidated, cannot perform initial state check.");
-        }
-    }
-
-} else {
-    // Script already initialized block
-}
-
-// The functions startObserverInternal, stopObserverInternal, and handleMutations
-// are now defined within the main initialization block.
-// The message listener calls these internal functions.
-
-// Optional: Check initial state if the script is reloaded/re-injected
-// This helps if the extension popup was closed and reopened while scanning was active.
-chrome.storage.local.get(['isScanning'], (result) => {
-    if (result.isScanning) {
-        // console.log('[Forcefield Continuous Scan] Script loaded/re-injected while scanning was globally active.');
-        // The popup.js logic (loadScanningState -> pingContentScriptObserverState -> startContinuousScanningLogic)
-        // is now responsible for explicitly telling this script to start observing if needed for the current tab.
-        // No automatic startObserver() call here anymore.
-    } else {
-        // console.log('[Forcefield Continuous Scan] Initial state is not scanning.');
-    }
-}); 
+    // Initialize scanner
+    new ContinuousScanner();
+} 
