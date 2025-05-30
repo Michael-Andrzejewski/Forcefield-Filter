@@ -107,7 +107,6 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight';
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
-    const MIN_MATCH_SUBSTRING_LENGTH = 5; // Minimum length for a substring match
 
     // First, reset all previously affected elements
     const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
@@ -127,46 +126,6 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
     const allElements = document.body.getElementsByTagName('*');
     let elementsAffected = 0;
 
-    // New helper function for nearest substring matching (copied from popup.js changes)
-    function findNearestMatchInOrder(pageText, blockedText) {
-        const blockedLength = blockedText.length;
-
-        // d = 0: Exact match
-        if (pageText.includes(blockedText)) {
-            return true;
-        }
-
-        // d = 1, 2, ... up to a point where substring is too short
-        for (let d = 1; d < blockedLength - MIN_MATCH_SUBSTRING_LENGTH + 1; d++) {
-            const currentSubLength = blockedLength - d;
-            if (currentSubLength < MIN_MATCH_SUBSTRING_LENGTH) {
-                break; // Substring would be too short
-            }
-
-            // Variation 1: Trim d from the end
-            const subTrimEnd = blockedText.substring(0, currentSubLength);
-            if (pageText.includes(subTrimEnd)) {
-                return true;
-            }
-
-            // Variation 2: Trim d from the start
-            const subTrimStart = blockedText.substring(d);
-            if (pageText.includes(subTrimStart)) {
-                return true;
-            }
-
-            // Variation 3: Trim j from start and (d-j) from end
-            // j goes from 1 to d-1 to cover mixed trims
-            for (let j = 1; j < d; j++) {
-                const subMixed = blockedText.substring(j, j + currentSubLength);
-                if (pageText.includes(subMixed)) {
-                    return true;
-                }
-            }
-        }
-        return false;
-    }
-
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
         if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
@@ -181,8 +140,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
                 const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
                 for (const item of blockListToUse) {
                     const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
-                    // Use new matching function instead of direct includes
-                    if (findNearestMatchInOrder(normalizedNodeText, normalizedBlockText)) {
+                    if (normalizedNodeText.includes(normalizedBlockText)) {
                         foundMatch = element;
                         matchedBlockItem = item;
                         break;
