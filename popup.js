@@ -520,6 +520,7 @@ function injectContentScript(blockListToUse, debugMode) {
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight'; // For potential CSS targeting
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
+    const MIN_MATCH_SUBSTRING_LENGTH = 5; // Minimum length for a substring match
 
     // First, reset all previously affected elements by this script
     const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
@@ -539,7 +540,49 @@ function injectContentScript(blockListToUse, debugMode) {
     // Helper function to normalize different apostrophe/single quote characters
     function normalizeApostrophes(str) {
         if (!str) return str;
-        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ' ' ` ´ with standard '
+        return str.replace(/[\\u2018\\u2019\\u0060\\u00B4]/g, "'"); // Replaces ' ' ` ´ with standard '
+    }
+
+    // New helper function for nearest substring matching
+    function findNearestMatchInOrder(pageText, blockedText) {
+        const blockedLength = blockedText.length;
+
+        // d = 0: Exact match
+        if (pageText.includes(blockedText)) {
+            return true;
+        }
+
+        // d = 1, 2, ... up to a point where substring is too short
+        for (let d = 1; d < blockedLength - MIN_MATCH_SUBSTRING_LENGTH + 1; d++) {
+            const currentSubLength = blockedLength - d;
+            if (currentSubLength < MIN_MATCH_SUBSTRING_LENGTH) {
+                break; // Substring would be too short
+            }
+
+            // Variation 1: Trim d from the end
+            const subTrimEnd = blockedText.substring(0, currentSubLength);
+            if (pageText.includes(subTrimEnd)) {
+                return true;
+            }
+
+            // Variation 2: Trim d from the start
+            const subTrimStart = blockedText.substring(d);
+            if (pageText.includes(subTrimStart)) {
+                return true;
+            }
+
+            // Variation 3: Trim j from start and (d-j) from end
+            // This covers substrings like blockedText.substring(j, j + currentSubLength)
+            // j goes from 1 to d-1 to cover mixed trims
+            for (let j = 1; j < d; j++) {
+                const subMixed = blockedText.substring(j, j + currentSubLength);
+                // Ensure subMixed itself is not too short (already covered by currentSubLength check mostly)
+                if (pageText.includes(subMixed)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     function blockListedContent(blockList) {
@@ -575,8 +618,8 @@ function injectContentScript(blockListToUse, debugMode) {
                     for (const item of blockList) {
                         // Normalize and lower-case the blocked item's text
                         const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
-                        // Use normalized texts for comparison
-                        if (normalizedNodeText.includes(normalizedBlockText)) {
+                        // Use new matching function instead of direct includes
+                        if (findNearestMatchInOrder(normalizedNodeText, normalizedBlockText)) {
                             foundMatch = element; // The element containing the text node is the target
                             matchedBlockItem = item; // Store the matched item
                             break; // Found a match for this text node, stop checking blocklist items
