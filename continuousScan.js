@@ -99,10 +99,30 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         for (const mutation of mutationsList) {
             if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
                 mutation.addedNodes.forEach(node => {
-                    if (node.nodeType === Node.ELEMENT_NODE) {
-                        if (node.dataset.hiddenByForcefield || node.tagName === 'SCRIPT' || node.tagName === 'STYLE') {
-                            return;
+                    // Check if the node itself or its parent should be ignored.
+                    // This is important if a text node is added directly under an ignored parent.
+                    let Curnode = node;
+                    if (Curnode.nodeType === Node.TEXT_NODE) {
+                        Curnode = Curnode.parentNode; // Check exclusion rules on the parent element
+                    }
+
+                    if (Curnode && Curnode.nodeType === Node.ELEMENT_NODE) {
+                         if (Curnode.dataset.hiddenByForcefield ||
+                             Curnode.tagName === 'SCRIPT' ||
+                             Curnode.tagName === 'STYLE' ||
+                             Curnode.tagName === 'NOSCRIPT' ||
+                             Curnode.tagName === 'IFRAME'   ||
+                             Curnode.tagName === 'TEXTAREA' ||
+                             Curnode.tagName === 'CANVAS'
+                             ) {
+                            return; // Skip this node
                         }
+                    }
+
+
+                    if (node.nodeType === Node.ELEMENT_NODE) {
+                        // Element node specific checks already in place (tagName, dataset)
+                        // No need to re-check Curnode related exclusions if node itself is an element being evaluated
                         const textContent = node.innerText || node.textContent || '';
                         const trimmedText = textContent.trim();
 
@@ -119,6 +139,33 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                         }
                     }
                 });
+            } else if (mutation.type === 'characterData') {
+                const targetNode = mutation.target;
+                // Ensure we're dealing with a text node and it has a parent
+                if (targetNode && targetNode.nodeType === Node.TEXT_NODE && targetNode.parentNode) {
+                    const parentElement = targetNode.parentNode;
+
+                    // Check if the parent element is one we should ignore
+                    if (parentElement.dataset.hiddenByForcefield ||
+                        parentElement.tagName === 'SCRIPT' ||
+                        parentElement.tagName === 'STYLE' ||
+                        parentElement.tagName === 'NOSCRIPT' ||
+                        parentElement.tagName === 'IFRAME'   ||
+                        parentElement.tagName === 'TEXTAREA' ||
+                        parentElement.tagName === 'CANVAS'
+                        ) {
+                        // Skip if the parent is an ignored element
+                        continue;
+                    }
+
+                    const textContent = targetNode.nodeValue || '';
+                    const trimmedText = textContent.trim();
+
+                    if (trimmedText.length >= MIN_NODE_TEXT_LENGTH && hasSufficientAlphaCharacters(trimmedText, MIN_ALPHA_RATIO)) {
+                        newTextBuffer.push(trimmedText);
+                        significantChangeDetected = true;
+                    }
+                }
             }
         }
 
@@ -132,13 +179,16 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                     if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
                         console.log('[Forcefield Continuous Scan] Debounced new text meeting criteria:', combinedText.substring(0,200) + '...');
                         if (canSendMessage()) {
-                            chrome.runtime.sendMessage({ command: "newContentDetected", text: combinedText }, (response) => {
+                            const messagePayload = { command: "newContentDetected", text: combinedText };
+                            chrome.runtime.sendMessage(messagePayload, (response) => {
                                 if (chrome.runtime.lastError) {
-                                     console.warn('[Forcefield CS] Error sending newContentDetected:', chrome.runtime.lastError.message);
+                                     console.warn('[Forcefield CS] Error sending newContentDetected:', chrome.runtime.lastError.message, 'Payload:', messagePayload, 'Response received:', response);
+                                } else {
+                                    console.log('[Forcefield CS] Successfully sent newContentDetected. Response:', response, 'Payload:', messagePayload);
                                 }
                             });
                         } else {
-                            console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected.');
+                            console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected. Payload that would have been sent:', { command: "newContentDetected", text: combinedText.substring(0,100) + '...'});
                         }
                     } else {
                         console.log('[Forcefield Continuous Scan] Debounced text too short, numeric, or insignificant, skipping AI call. Length:', combinedText.length, 'Text:', combinedText.substring(0,100) + '...');
@@ -174,6 +224,8 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         observer.observe(document.body, {
             childList: true,
             subtree: true,
+            characterData: true, // Added to observe text changes in existing nodes
+            // characterDataOldValue: true // Optional: if you need the old value
         });
         console.log('[Forcefield CS] Observer started/restarted. Initial scan performed.');
     }
@@ -256,13 +308,18 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                                 }
                             });
                         });
-                    } else { 
+                    } else {
                         if (isObserving) {
                             console.log('[Forcefield CS] Visibility: Global scan off, stopping observer.');
                             stopObserverInternal();
                         }
                     }
                 });
+            } else if (document.visibilityState === 'hidden') {
+                if (isObserving) {
+                    console.log('[Forcefield CS] Visibility: Tab became hidden, stopping observer.');
+                    stopObserverInternal();
+                }
             }
         });
         window.forcefieldVisibilityListenerAdded = true;

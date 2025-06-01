@@ -42,6 +42,16 @@ let currentAiCallAbortController = null;
 let activeScanTabId = null; // Keep track of which tab is being scanned
 let aiCallCounter = 0; // Counter for unique AI call IDs
 
+// Load activeScanTabId on startup
+chrome.storage.local.get(['activeScanTabId'], (result) => {
+    if (result.activeScanTabId) {
+        activeScanTabId = result.activeScanTabId;
+        console.log(`[Forcefield Background] Loaded activeScanTabId from storage: ${activeScanTabId}`);
+    } else {
+        console.log(`[Forcefield Background] No activeScanTabId found in storage on startup.`);
+    }
+});
+
 // Utility function to log messages to a specific tab's console
 async function logToPageConsole(tabId, ...args) {
   if (!tabId) {
@@ -337,37 +347,49 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
     return blockList; 
 }
 
-async function processNewContentWithAIBackground(text, tabId) {
+async function processNewContentWithAIBackground(text, tabId, originalSendResponse) {
+    aiCallCounter++;
+    const callId = aiCallCounter;
+    const logPrefix = `[Forcefield BG Call #${callId} - Tab ${tabId || 'unknown'}]`;
+    let responseSent = false;
+
+    function safeSendResponse(responseArg) {
+        if (!responseSent) {
+            console.log(`${logPrefix} Sending response:`, responseArg);
+            originalSendResponse(responseArg);
+            responseSent = true;
+        } else {
+            console.warn(`${logPrefix} Response already sent for this call. Suppressed extra:`, responseArg);
+        }
+    }
+
     if (!tabId) {
-        console.warn('[Forcefield Background] processNewContentWithAIBackground called without tabId.');
+        console.warn(`${logPrefix} processNewContentWithAIBackground called without tabId.`);
+        safeSendResponse({status: "Error: Missing tabId for AI processing", error: "Missing tabId"});
         return;
     }
 
-    aiCallCounter++;
-    const callId = aiCallCounter;
-    const logPrefix = `[Forcefield BG Call #${callId} - Tab ${tabId}]`;
-
     console.log(`${logPrefix} Processing new text chunk...`);
-    // Optional: Send status to popup if open
     chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing new content..."}).catch(e => {});
 
     if (currentAiCallAbortController) {
         console.warn(`${logPrefix} Aborting previous AI call due to new content.`);
-        currentAiCallAbortController.abort();
+        currentAiCallAbortController.abort("New content arrived");
     }
     currentAiCallAbortController = new AbortController();
     const signal = currentAiCallAbortController.signal;
 
-    const MAX_RETRIES = 1; // Try the initial call + 1 retry
+    const MAX_RETRIES = 1;
     let attempt = 0;
 
     while (attempt <= MAX_RETRIES) {
         if (attempt > 0) {
             console.log(`${logPrefix} Retrying AI call (attempt ${attempt} of ${MAX_RETRIES})...`);
-            await new Promise(resolve => setTimeout(resolve, 2000 * attempt)); // Exponential backoff (simple version)
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
             if (signal.aborted) {
                 console.log(`${logPrefix} Retry attempt aborted.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing aborted."}).catch(e => {});
+                safeSendResponse({status: "AI processing aborted before retry", reason: signal.reason});
                 return;
             }
         }
@@ -377,17 +399,19 @@ async function processNewContentWithAIBackground(text, tabId) {
                 chrome.storage.sync.get(['customSystemPrompt']),
                 chrome.storage.sync.get(['customUserPromptPrefix']),
                 chrome.storage.sync.get(['selectedAiModel']),
-                chrome.storage.local.get(['isScanning']), // Check if scanning is still globally active
-                chrome.storage.local.get(['debugMode']) // Get debugMode state
+                chrome.storage.local.get(['isScanning']),
+                chrome.storage.local.get(['debugMode'])
             ]);
 
             if (!storageIsScanning.isScanning) {
                 console.log(`${logPrefix} Global scanning is off. Aborting AI processing.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "Processing aborted (scan stopped)."}).catch(e => {});
+                safeSendResponse({status: "AI processing aborted: Global scan off"});
                 return;
             }
             if (activeScanTabId !== tabId) {
                  console.log(`${logPrefix} Tab is not the active scanning tab (${activeScanTabId}). Ignoring content.`);
+                 safeSendResponse({status: "AI processing ignored: Not active scan tab"});
                  return;
             }
 
@@ -423,13 +447,14 @@ async function processNewContentWithAIBackground(text, tabId) {
             if (signal.aborted) {
                 console.log(`${logPrefix} API call aborted during fetch.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing aborted."}).catch(e => {});
+                safeSendResponse({status: "AI processing aborted during fetch", reason: signal.reason });
                 return;
             }
 
             if (!response.ok) {
                 const errorBodyText = await response.text();
                 const error = new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBodyText}`);
-                error.status = response.status; // Attach status to error object for retry logic
+                error.status = response.status;
                 throw error;
             }
 
@@ -450,29 +475,29 @@ async function processNewContentWithAIBackground(text, tabId) {
                 const currentDebugMode = storageDebugMode.debugMode || false;
                 const updatedBlockList = await addSuggestedWords(suggestions, null, `ai_continuous_bg_${callId}`, tabId);
                 if (updatedBlockList && updatedBlockList.length > 0) {
-                    // Fetch whiteboxMode state before calling triggerPageBlock
                     const { whiteboxMode } = await chrome.storage.local.get(['whiteboxMode']);
                     triggerPageBlock(tabId, updatedBlockList, currentDebugMode, whiteboxMode || false);
                 }
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Processed: ${suggestions.length} new blocks. Re-blocking.`}).catch(e => {});
+                safeSendResponse({status: "AI processing complete", suggestionsAdded: suggestions.length});
             } else {
                 logToPageConsole(tabId, `[Forcefield AI #${callId}] No new suggestions found.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI found no new items to block.'}).catch(e => {});
+                safeSendResponse({status: "AI processing complete", suggestionsAdded: 0});
             }
-            break; // Success, exit retry loop
+            break;
 
         } catch (error) {
             if (signal.aborted && error.name === 'AbortError') {
-                console.log(`${logPrefix} Fetch aborted as expected (attempt ${attempt}).`);
+                console.log(`${logPrefix} Fetch aborted as expected (attempt ${attempt}). Reason: ${signal.reason}`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI processing aborted.'}).catch(e => {});
-                break; // Aborted, exit retry loop
+                safeSendResponse({status: "AI processing aborted by signal", reason: signal.reason});
+                break;
             }
 
             console.error(`${logPrefix} AI Call Error (attempt ${attempt}):`, error.message, error);
             logToPageConsole(tabId, `[Forcefield AI #${callId}] Error (attempt ${attempt}):`, error.message);
 
-            // Retry only for network errors or 5xx server errors
-            // error.status might not be set for network errors (e.g. fetch itself fails)
             const isRetryable = !error.status || (error.status >= 500 && error.status <= 599);
 
             if (isRetryable && attempt < MAX_RETRIES) {
@@ -482,17 +507,27 @@ async function processNewContentWithAIBackground(text, tabId) {
             } else if (!isRetryable) {
                 console.error(`${logPrefix} Non-retryable error (${error.status || 'network error'}). Aborting further attempts.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Error: ${error.message.substring(0,50)}... (Not retrying)`}).catch(e => {});
-                break; // Non-retryable error, exit loop
+                safeSendResponse({status: "AI processing error: Non-retryable", error: error.message});
+                break;
             } else {
                 console.error(`${logPrefix} Max retries reached. Aborting further attempts.`);
                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Error: ${error.message.substring(0,50)}... (Max retries)`}).catch(e => {});
-                break; // Max retries reached, exit loop
+                safeSendResponse({status: "AI processing error: Max retries reached", error: error.message});
+                break;
             }
         }
-    } // End while loop
+    }
+
+    if (!responseSent && !signal.aborted) {
+        console.warn(`${logPrefix} AI processing loop completed without explicit response. Sending generic failure.`);
+        safeSendResponse({status: "AI processing failed: Unknown reason after loop completion"});
+    }
+    else if (!responseSent && signal.aborted) {
+        console.warn(`${logPrefix} AI processing was aborted, but no explicit abort response was sent. Sending generic abort response.`);
+        safeSendResponse({status: "AI processing aborted: Generic", reason: signal.reason});
+    }
 
     currentAiCallAbortController = null;
-    // Update popup status if still scanning
     chrome.storage.local.get(['isScanning'], (res) => {
         if (res.isScanning && activeScanTabId === tabId) {
              chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'Scanning active...'}).catch(e => {});
@@ -501,58 +536,71 @@ async function processNewContentWithAIBackground(text, tabId) {
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    const onMessageLogPrefix = `[Forcefield BG OnMessage - Cmd: ${request.command}]`;
+
     if (request.command === "newContentDetected") {
-        console.log('[Forcefield Background] Received newContentDetected from tab:', sender.tab ? sender.tab.id : 'unknown tab');
+        console.log(`${onMessageLogPrefix} Received from tab:`, sender.tab ? sender.tab.id : 'unknown tab');
         if (sender.tab && sender.tab.id) {
-            // Check if scanning is enabled for this tab or globally
             chrome.storage.local.get(['isScanning'], (result) => {
+                if (chrome.runtime.lastError) {
+                    console.error(`${onMessageLogPrefix} Error getting local storage for 'isScanning':`, chrome.runtime.lastError.message);
+                    sendResponse({status: "Error: Failed to get storage state for scanning check", error: chrome.runtime.lastError.message});
+                    return;
+                }
+
                 if (result.isScanning && sender.tab.id === activeScanTabId) {
-                    processNewContentWithAIBackground(request.text, sender.tab.id);
-                    sendResponse({status: "Text received by background for AI processing"});
+                    processNewContentWithAIBackground(request.text, sender.tab.id, sendResponse);
                 } else {
-                    console.log(`[Forcefield Background] Received content from tab ${sender.tab.id}, but scanning is off or not for this tab.`);
-                    sendResponse({status: "Scanning off or wrong tab, content ignored by background"});
+                    let reason = "Content ignored: Conditions not met.";
+                    if (!result.isScanning) reason = "Global scanning is off";
+                    else if (sender.tab.id !== activeScanTabId) reason = `Content from inactive tab ${sender.tab.id} (active is ${activeScanTabId})`;
+                    
+                    console.log(`${onMessageLogPrefix} Content from tab ${sender.tab.id} will be ignored. Reason: ${reason}.`);
+                    sendResponse({status: "Content ignored by background", reason: reason});
                 }
             });
-            return true; // Indicate async response
+            return true; 
+        } else {
+            console.warn(`${onMessageLogPrefix} newContentDetected received without proper sender tab ID.`);
+            sendResponse({status: "Error: Missing sender tab ID", error: "Sender tab ID not available"});
+            return false; 
         }
-    } else if (request.command === "startContinuousScanBG") { // New command from popup
+    } else if (request.command === "startContinuousScanBG") {
         activeScanTabId = request.tabId;
-        console.log(`[Forcefield Background] Service worker instructed to start/monitor continuous scan for tab ${request.tabId}`);
-        // The actual observer is started by popup.js in the content script.
-        // Service worker just needs to know which tab it should process messages from.
+        chrome.storage.local.set({ activeScanTabId: request.tabId }, () => {
+            console.log(`[Forcefield Background] Service worker instructed to start/monitor continuous scan for tab ${request.tabId}. Stored.`);
+        });
         sendResponse({status: "Background aware of scan start"});
-    } else if (request.command === "stopContinuousScanBG") { // New command from popup
+    } else if (request.command === "stopContinuousScanBG") {
         console.log(`[Forcefield Background] Service worker instructed to stop scan for tab ${request.tabId}`);
         if (activeScanTabId === request.tabId) {
             activeScanTabId = null;
+            chrome.storage.local.remove('activeScanTabId', () => { // Or set to null: chrome.storage.local.set({ activeScanTabId: null })
+                console.log(`[Forcefield Background] Cleared activeScanTabId from storage.`);
+            });
             if (currentAiCallAbortController) {
-                currentAiCallAbortController.abort();
+                currentAiCallAbortController.abort("Scan stopped by instruction");
                 currentAiCallAbortController = null;
                 console.log('[Forcefield Background] Aborted ongoing AI call due to scan stop instruction.');
             }
         }
         sendResponse({status: "Background aware of scan stop"});
     } else if (request.command === "getActiveScanTabId") {
-        // New command to get which tab is actively being scanned
         sendResponse({activeScanTabId: activeScanTabId});
     } else if (request.command === "getGlobalScanningState") {
-        // Command from content script to check if scanning should be active
         chrome.storage.local.get(['isScanning'], (result) => {
             sendResponse({isScanningGlobally: result.isScanning || false});
         });
-        return true; // Keep channel open for async response
+        return true;
     } else if (request.command === "getCurrentTabId") {
-        // Command from content script to get its own tab ID
         if (sender.tab && sender.tab.id) {
             sendResponse({tabId: sender.tab.id});
         } else {
             sendResponse({tabId: null});
         }
     }
-    // Add other message handlers if needed, e.g., for status updates from content script
 
-    return true; // Keep channel open for other async responses if any other handlers need it
+    return true;
 });
 
 // Listen for tab activation changes
@@ -562,27 +610,23 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
 
     const { isScanning } = await chrome.storage.local.get(['isScanning']);
     if (!isScanning) {
-        // console.log('[Forcefield Background] Tab activated, but global scanning is off. No action.');
         return;
     }
 
     const previousActiveScanTabId = activeScanTabId;
 
     if (previousActiveScanTabId && previousActiveScanTabId !== newTabId) {
-        // Stop observer on the previously active tab
         console.log(`[Forcefield Background] Attempting to stop observer on old tab ${previousActiveScanTabId}`);
         chrome.tabs.sendMessage(previousActiveScanTabId, { command: "stopObserving" })
             .catch(err => console.warn(`[Forcefield Background] Error sending stopObserving to old tab ${previousActiveScanTabId}: ${err.message}. Tab might be closed.`));
     }
 
-    // Update activeScanTabId to the new tab
     activeScanTabId = newTabId;
-    console.log(`[Forcefield Background] Active scan tab updated to: ${activeScanTabId}`);
+    chrome.storage.local.set({ activeScanTabId: newTabId }, () => {
+        console.log(`[Forcefield Background] Active scan tab updated to: ${activeScanTabId}. Stored.`);
+    });
 
-    // Attempt to start observer on the newly activated tab
-    // We need to ensure the content script is there first.
     try {
-        // Check if the tab is already loaded, otherwise onUpdated will handle it.
         const tab = await chrome.tabs.get(newTabId);
         if (tab.status === 'complete' && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
             console.log(`[Forcefield Background] Tab ${newTabId} is already complete, ensuring script and starting observer.`);
@@ -600,23 +644,19 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
         console.warn(`[Forcefield Background] Failed to process new tab ${newTabId} on activation: ${err.message}. This can happen on special pages (e.g. chrome://).`);
     }
     
-    // Update popup status if it were open (though it usually closes on tab switch)
     chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Scanning tab ${newTabId}...`}).catch(e => {});
 });
 
 // Listen for tab updates (e.g., new URL loaded, page finished loading)
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-    // We are interested when the tab has finished loading content
     if (changeInfo.status === 'complete' && tab.url && (tab.url.startsWith('http://') || tab.url.startsWith('https://'))) {
         console.log(`[Forcefield Background] Tab updated and complete: ${tabId}, URL: ${tab.url}`);
 
         const { isScanning } = await chrome.storage.local.get(['isScanning']);
         if (!isScanning) {
-            // console.log(`[Forcefield Background] Tab ${tabId} updated, but global scanning is off.`);
             return;
         }
 
-        // Only proceed if this is the currently active tab that should be scanned
         if (tabId === activeScanTabId) {
             console.log(`[Forcefield Background] Tab ${tabId} is the active scan tab. Ensuring script and starting observer.`);
             try {
@@ -631,7 +671,6 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
                 console.warn(`[Forcefield Background] Failed to inject/start script on updated tab ${tabId}: ${err.message}. This can happen on special pages.`);
             }
         } else {
-            // console.log(`[Forcefield Background] Tab ${tabId} updated, but it's not the active scan tab (${activeScanTabId}).`);
         }
     }
 });
