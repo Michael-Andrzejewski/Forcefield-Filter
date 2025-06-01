@@ -40,6 +40,7 @@ const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
 
 let currentAiCallAbortController = null;
 let activeScanTabId = null; // Keep track of which tab is being scanned
+let aiCallCounter = 0; // Counter for unique AI call IDs
 
 // Utility function to log messages to a specific tab's console
 async function logToPageConsole(tabId, ...args) {
@@ -57,7 +58,14 @@ async function logToPageConsole(tabId, ...args) {
       args: preparedArgs,
     });
   } catch (error) {
-    console.error('[Forcefield Background] Failed to log message to page console (tabId: ', tabId, '):', error, 'Args:', ...args);
+    // If tab is not accessible, log it calmly. Otherwise, it's a more concerning error.
+    if (error.message.includes("No tab with id") || 
+        error.message.includes("Cannot access") || // Covers chrome://, file://, etc.
+        error.message.includes("The tab was closed")) {
+      console.log(`[Forcefield Background] logToPageConsole: Tab ${tabId} not accessible. Args:`, preparedArgs.slice(0, 2)); // Log first few args for context
+    } else {
+      console.warn('[Forcefield Background] Failed to log message to page console (tabId: ', tabId, ') with unexpected error:', error, 'Args:', preparedArgs.slice(0, 2));
+    }
   }
 }
 
@@ -98,7 +106,7 @@ function getDefaultLevelForSite(url) {
 }
 
 // We need the actual function that does the blocking
-function actualContentBlockingFunction(blockListToUse, debugMode) {
+function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) {
     function normalizeApostrophes(str) {
         if (!str) return str;
         return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'");
@@ -107,16 +115,43 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight';
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
+    const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important;';
 
     // First, reset all previously affected elements
-    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
+    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}]`);
     previouslyAffected.forEach(el => {
-        el.style.display = '';
-        el.style.border = '';
-        el.style.backgroundColor = '';
+        // Restore original styles if they were saved
+        if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
+        else el.style.display = '';
+
+        if (el.dataset.originalVisibility) el.style.visibility = el.dataset.originalVisibility;
+        else el.style.visibility = '';
+        
+        if (el.dataset.originalBorder) el.style.border = el.dataset.originalBorder;
+        else el.style.border = '';
+
+        if (el.dataset.originalBackgroundColor) el.style.backgroundColor = el.dataset.originalBackgroundColor;
+        else el.style.backgroundColor = '';
+
+        if (el.dataset.originalWidth) el.style.width = el.dataset.originalWidth;
+        else el.style.width = '';
+
+        if (el.dataset.originalHeight) el.style.height = el.dataset.originalHeight;
+        else el.style.height = '';
+        
+        el.innerHTML = el.dataset.originalInnerHTML || ''; // Restore content if whiteboxed
+
         el.classList.remove(debugHighlightClass);
         delete el.dataset[hiddenMarker];
-        if (el.style.visibility === 'hidden' || el.style.display === 'none') {
+        delete el.dataset.originalDisplay;
+        delete el.dataset.originalVisibility;
+        delete el.dataset.originalBorder;
+        delete el.dataset.originalBackgroundColor;
+        delete el.dataset.originalWidth;
+        delete el.dataset.originalHeight;
+        delete el.dataset.originalInnerHTML;
+
+       if (el.style.visibility === 'hidden' || el.style.display === 'none') {
             el.style.visibility = 'revert';
             el.style.display = 'revert';
        }
@@ -128,7 +163,8 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
 
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
-        if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
+        // Skip logic considering whitebox mode
+        if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !debugMode) {
             continue;
         }
 
@@ -173,6 +209,31 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
                         elementToHide.dataset[hiddenMarker] = 'debug';
                         elementsAffected++;
                     }
+                } else if (whiteboxMode) {
+                    if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') {
+                        const computedStyle = window.getComputedStyle(elementToHide);
+                        elementToHide.dataset.originalDisplay = elementToHide.style.display || '';
+                        elementToHide.dataset.originalVisibility = elementToHide.style.visibility || '';
+                        elementToHide.dataset.originalBorder = elementToHide.style.border || '';
+                        elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
+                        elementToHide.dataset.originalWidth = computedStyle.width;
+                        elementToHide.dataset.originalHeight = computedStyle.height;
+                        elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
+
+                        elementToHide.innerHTML = '';
+                        elementToHide.style.cssText += whiteboxStyle;
+                        elementToHide.style.width = elementToHide.dataset.originalWidth;
+                        elementToHide.style.height = elementToHide.dataset.originalHeight;
+                        if (computedStyle.display === 'inline') {
+                            elementToHide.style.display = 'inline-block';
+                        } else if (computedStyle.display === 'none' || computedStyle.display === ''){
+                            elementToHide.style.display = 'block';
+                        } else {
+                            elementToHide.style.display = computedStyle.display;
+                        }
+                        elementToHide.dataset[hiddenMarker] = 'whiteboxed';
+                        elementsAffected++;
+                    }
                 } else {
                     if (elementToHide.style.display !== 'none') {
                         elementToHide.style.display = 'none';
@@ -180,7 +241,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode) {
                         elementsAffected++;
                     }
                 }
-            } else if (elementToHide && (elementToHide.style.display === 'none' || elementToHide.classList.contains(debugHighlightClass))) {
+            } else if (elementToHide && elementToHide.dataset[hiddenMarker]) {
                 // Already hidden or highlighted by us
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
                  console.warn(`[Forcefield Content Blocker (from SW)] Avoided affecting BODY/HTML for "${matchedBlockItem.text}".`);
@@ -200,11 +261,22 @@ function triggerPageBlock(tabId, blockList, debugMode) {
         console.error("[Forcefield Background] triggerPageBlock: Missing tabId.");
         return;
     }
-    chrome.scripting.executeScript({
-        target: { tabId: tabId },
-        func: actualContentBlockingFunction,
-        args: [blockList, debugMode]
-    }).catch(err => console.error(`[Forcefield Background] Error in executeScript for triggerPageBlock on tab ${tabId}:`, err));
+    chrome.storage.local.get(['whiteboxMode'], (result) => { // Get whitebox mode state
+        const whiteboxMode = result.whiteboxMode || false;
+        chrome.scripting.executeScript({
+            target: { tabId: tabId },
+            func: actualContentBlockingFunction,
+            args: [blockList, debugMode, whiteboxMode] // Pass whiteboxMode
+        }).catch(err => {
+            if (err.message.includes("No tab with id") || 
+                err.message.includes("Cannot access") ||
+                err.message.includes("The tab was closed")) {
+                console.log(`[Forcefield Background] triggerPageBlock: Tab ${tabId} not accessible for re-blocking.`);
+            } else {
+                console.warn(`[Forcefield Background] Error in executeScript for triggerPageBlock on tab ${tabId} (unexpected):`, err);
+            }
+        });
+    });
 }
 
 // Modified addSuggestedWords for background context
@@ -217,7 +289,11 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
             const tab = await chrome.tabs.get(tabIdForContext);
             tabUrl = tab.url;
         } catch (e) {
-            console.error(`[Forcefield Background] Error getting tab URL for tabId ${tabIdForContext}:`, e);
+            if (e.message.includes("No tab with id")) {
+                console.info(`[Forcefield Background] addSuggestedWords: Tab ${tabIdForContext} not found for URL check. Using default level.`);
+            } else {
+                console.warn(`[Forcefield Background] Error getting tab URL for tabId ${tabIdForContext} (unexpected):`, e);
+            }
         }
     }
 
@@ -267,119 +343,161 @@ async function processNewContentWithAIBackground(text, tabId) {
         return;
     }
 
-    console.log(`[Forcefield Background] Processing new text chunk for tab ${tabId}...`);
+    aiCallCounter++;
+    const callId = aiCallCounter;
+    const logPrefix = `[Forcefield BG Call #${callId} - Tab ${tabId}]`;
+
+    console.log(`${logPrefix} Processing new text chunk...`);
     // Optional: Send status to popup if open
     chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing new content..."}).catch(e => {});
 
     if (currentAiCallAbortController) {
-        console.warn('[Forcefield Background] Aborting previous AI call due to new content.');
+        console.warn(`${logPrefix} Aborting previous AI call due to new content.`);
         currentAiCallAbortController.abort();
     }
     currentAiCallAbortController = new AbortController();
     const signal = currentAiCallAbortController.signal;
 
-    try {
-        const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning, storageDebugMode] = await Promise.all([
-            chrome.storage.sync.get(['customSystemPrompt']),
-            chrome.storage.sync.get(['customUserPromptPrefix']),
-            chrome.storage.sync.get(['selectedAiModel']),
-            chrome.storage.local.get(['isScanning']), // Check if scanning is still globally active
-            chrome.storage.local.get(['debugMode']) // Get debugMode state
-        ]);
+    const MAX_RETRIES = 1; // Try the initial call + 1 retry
+    let attempt = 0;
 
-        if (!storageIsScanning.isScanning) {
-            console.log('[Forcefield Background] Global scanning is off. Aborting AI processing.');
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "Processing aborted (scan stopped)."}).catch(e => {});
-            return;
-        }
-        // Also check if this specific tab is the active one for scanning
-        // This is a simple check; a more robust system might store scanning state per tab.
-        if (activeScanTabId !== tabId) {
-             console.log(`[Forcefield Background] Tab ${tabId} is not the active scanning tab (${activeScanTabId}). Ignoring content.`);
-             return;
-        }
-
-        const currentSystemPrompt = storageSystemPrompt.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
-        const currentUserPromptPrefix = storageUserPrompt.customUserPromptPrefix !== undefined ? storageUserPrompt.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
-        const selectedModel = storageModel.selectedAiModel || DEFAULT_AI_MODEL;
-        const currentAiModel = AVAILABLE_AI_MODELS[selectedModel] ? selectedModel : DEFAULT_AI_MODEL;
-
-        const userPrompt = `${currentUserPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
-        const requestBody = {
-            model: currentAiModel,
-            max_tokens: 4096,
-            temperature: 0.5,
-            system: currentSystemPrompt,
-            messages: [{ role: "user", content: userPrompt }]
-        };
-
-        logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Sending prompt. Body:', JSON.stringify(requestBody, null, 2));
-
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'x-api-key': ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody),
-            signal: signal
-        });
-
-        if (signal.aborted) {
-            console.log('[Forcefield Background] API call aborted.');
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing aborted."}).catch(e => {});
-            return;
-        }
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
-        }
-
-        const result = await response.json();
-        logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Received response from Claude:', result);
-
-        let aiResponseContent = '';
-        if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
-            aiResponseContent = result.content[0].text;
-        }
-
-        const suggestions = extractNegativeTags(aiResponseContent);
-        console.log('[Forcefield Background] Extracted suggestions:', suggestions);
-        logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Extracted suggestions:', suggestions);
-
-        if (suggestions.length > 0) {
-            const currentDebugMode = storageDebugMode.debugMode || false; // Use fetched debugMode
-            const updatedBlockList = await addSuggestedWords(suggestions, null, 'ai_continuous_bg', tabId);
-            if (updatedBlockList && updatedBlockList.length > 0) {
-                triggerPageBlock(tabId, updatedBlockList, currentDebugMode); // Pass currentDebugMode
+    while (attempt <= MAX_RETRIES) {
+        if (attempt > 0) {
+            console.log(`${logPrefix} Retrying AI call (attempt ${attempt} of ${MAX_RETRIES})...`);
+            await new Promise(resolve => setTimeout(resolve, 2000 * attempt)); // Exponential backoff (simple version)
+            if (signal.aborted) {
+                console.log(`${logPrefix} Retry attempt aborted.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing aborted."}).catch(e => {});
+                return;
             }
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Processed: ${suggestions.length} new blocks. Re-blocking.`}).catch(e => {});
-        } else {
-            logToPageConsole(tabId, '[Forcefield AI - Continuous BG] No new suggestions found.');
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI found no new items to block.'}).catch(e => {});
         }
 
-    } catch (error) {
-        if (error.name === 'AbortError') {
-            console.log('[Forcefield Background] Fetch aborted as expected.');
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI processing aborted.'}).catch(e => {});
-        } else {
-            console.error('[Forcefield Background] Error during AI processing:', error);
-            logToPageConsole(tabId, '[Forcefield AI - Continuous BG] Error during AI processing:', error.message);
-            chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Error: ${error.message.substring(0,50)}...`}).catch(e => {});
-        }
-    } finally {
-        currentAiCallAbortController = null;
-        // Update popup status if still scanning
-        chrome.storage.local.get(['isScanning'], (res) => {
-            if (res.isScanning && activeScanTabId === tabId) {
-                 chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'Scanning active...'}).catch(e => {});
+        try {
+            const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning, storageDebugMode] = await Promise.all([
+                chrome.storage.sync.get(['customSystemPrompt']),
+                chrome.storage.sync.get(['customUserPromptPrefix']),
+                chrome.storage.sync.get(['selectedAiModel']),
+                chrome.storage.local.get(['isScanning']), // Check if scanning is still globally active
+                chrome.storage.local.get(['debugMode']) // Get debugMode state
+            ]);
+
+            if (!storageIsScanning.isScanning) {
+                console.log(`${logPrefix} Global scanning is off. Aborting AI processing.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "Processing aborted (scan stopped)."}).catch(e => {});
+                return;
             }
-        });
-    }
+            if (activeScanTabId !== tabId) {
+                 console.log(`${logPrefix} Tab is not the active scanning tab (${activeScanTabId}). Ignoring content.`);
+                 return;
+            }
+
+            const currentSystemPrompt = storageSystemPrompt.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+            const currentUserPromptPrefix = storageUserPrompt.customUserPromptPrefix !== undefined ? storageUserPrompt.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
+            const selectedModel = storageModel.selectedAiModel || DEFAULT_AI_MODEL;
+            const currentAiModel = AVAILABLE_AI_MODELS[selectedModel] ? selectedModel : DEFAULT_AI_MODEL;
+
+            const userPrompt = `${currentUserPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
+            const requestBody = {
+                model: currentAiModel,
+                max_tokens: 4096,
+                temperature: 0.5,
+                system: currentSystemPrompt,
+                messages: [{ role: "user", content: userPrompt }]
+            };
+
+            console.log(`${logPrefix} AI Call Initiated (attempt ${attempt}). Model: ${currentAiModel}.`);
+            logToPageConsole(tabId, `[Forcefield AI #${callId}] Sending prompt (attempt ${attempt}). Body:`, JSON.stringify(requestBody, null, 2));
+
+            const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                    'x-api-key': ANTHROPIC_API_KEY,
+                    'anthropic-version': '2023-06-01',
+                    'content-type': 'application/json',
+                    'anthropic-dangerous-direct-browser-access': 'true'
+                },
+                body: JSON.stringify(requestBody),
+                signal: signal
+            });
+
+            if (signal.aborted) {
+                console.log(`${logPrefix} API call aborted during fetch.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "AI processing aborted."}).catch(e => {});
+                return;
+            }
+
+            if (!response.ok) {
+                const errorBodyText = await response.text();
+                const error = new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBodyText}`);
+                error.status = response.status; // Attach status to error object for retry logic
+                throw error;
+            }
+
+            const result = await response.json();
+            console.log(`${logPrefix} AI Call Success (attempt ${attempt}).`);
+            logToPageConsole(tabId, `[Forcefield AI #${callId}] Received response:`, result);
+
+            let aiResponseContent = '';
+            if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
+                aiResponseContent = result.content[0].text;
+            }
+
+            const suggestions = extractNegativeTags(aiResponseContent);
+            console.log(`${logPrefix} Extracted suggestions:`, suggestions);
+            logToPageConsole(tabId, `[Forcefield AI #${callId}] Extracted suggestions:`, suggestions);
+
+            if (suggestions.length > 0) {
+                const currentDebugMode = storageDebugMode.debugMode || false;
+                const updatedBlockList = await addSuggestedWords(suggestions, null, `ai_continuous_bg_${callId}`, tabId);
+                if (updatedBlockList && updatedBlockList.length > 0) {
+                    // Fetch whiteboxMode state before calling triggerPageBlock
+                    const { whiteboxMode } = await chrome.storage.local.get(['whiteboxMode']);
+                    triggerPageBlock(tabId, updatedBlockList, currentDebugMode, whiteboxMode || false);
+                }
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Processed: ${suggestions.length} new blocks. Re-blocking.`}).catch(e => {});
+            } else {
+                logToPageConsole(tabId, `[Forcefield AI #${callId}] No new suggestions found.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI found no new items to block.'}).catch(e => {});
+            }
+            break; // Success, exit retry loop
+
+        } catch (error) {
+            if (signal.aborted && error.name === 'AbortError') {
+                console.log(`${logPrefix} Fetch aborted as expected (attempt ${attempt}).`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'AI processing aborted.'}).catch(e => {});
+                break; // Aborted, exit retry loop
+            }
+
+            console.error(`${logPrefix} AI Call Error (attempt ${attempt}):`, error.message, error);
+            logToPageConsole(tabId, `[Forcefield AI #${callId}] Error (attempt ${attempt}):`, error.message);
+
+            // Retry only for network errors or 5xx server errors
+            // error.status might not be set for network errors (e.g. fetch itself fails)
+            const isRetryable = !error.status || (error.status >= 500 && error.status <= 599);
+
+            if (isRetryable && attempt < MAX_RETRIES) {
+                attempt++;
+                console.log(`${logPrefix} Will attempt retry #${attempt}.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `AI Error. Retrying (${attempt}/${MAX_RETRIES})...`}).catch(e => {});
+            } else if (!isRetryable) {
+                console.error(`${logPrefix} Non-retryable error (${error.status || 'network error'}). Aborting further attempts.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Error: ${error.message.substring(0,50)}... (Not retrying)`}).catch(e => {});
+                break; // Non-retryable error, exit loop
+            } else {
+                console.error(`${logPrefix} Max retries reached. Aborting further attempts.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: `Error: ${error.message.substring(0,50)}... (Max retries)`}).catch(e => {});
+                break; // Max retries reached, exit loop
+            }
+        }
+    } // End while loop
+
+    currentAiCallAbortController = null;
+    // Update popup status if still scanning
+    chrome.storage.local.get(['isScanning'], (res) => {
+        if (res.isScanning && activeScanTabId === tabId) {
+             chrome.runtime.sendMessage({ command: "scanningStateChanged", status: 'Scanning active...'}).catch(e => {});
+        }
+    });
 }
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

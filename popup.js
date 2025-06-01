@@ -15,6 +15,7 @@ const startScanningButton = document.getElementById('startScanningButton');
 const stopScanningButton = document.getElementById('stopScanningButton');
 const scanningStatus = document.getElementById('scanningStatus');
 const debugModeCheckbox = document.getElementById('debugModeCheckbox');
+const whiteboxModeCheckbox = document.getElementById('whiteboxModeCheckbox');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Kept for the manual "Suggest Blocks (AI)" feature in popup.js
@@ -64,6 +65,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAiModelSelection();
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
+    loadWhiteboxModeState(); // Added for whitebox mode
 });
 
 // Add word to blocklist
@@ -106,6 +108,9 @@ aiModelSelect.addEventListener('change', saveAiModelSelection);
 
 // Add listener for Debug Mode checkbox
 debugModeCheckbox.addEventListener('change', handleDebugModeChange);
+
+// Add listener for Whitebox Mode checkbox
+whiteboxModeCheckbox.addEventListener('change', handleWhiteboxModeChange);
 
 // Add listeners for Scanning buttons
 startScanningButton.addEventListener('click', startContinuousScanning);
@@ -358,11 +363,14 @@ function stopContinuousScanning() {
 function triggerPageBlock(blockListToUse, debugMode) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
-            chrome.scripting.executeScript({
-                target: { tabId: tabs[0].id },
-                func: injectContentScript,
-                args: [blockListToUse, debugMode]
-            }).catch(err => console.error("[Forcefield] Error injecting/running main block script: ", err));
+            chrome.storage.local.get(['whiteboxMode'], (result) => { // Get whitebox mode state
+                const whiteboxMode = result.whiteboxMode || false;
+                chrome.scripting.executeScript({
+                    target: { tabId: tabs[0].id },
+                    func: injectContentScript,
+                    args: [blockListToUse, debugMode, whiteboxMode] // Pass whiteboxMode
+                }).catch(err => console.error("[Forcefield] Error injecting/running main block script: ", err));
+            });
         } else {
             console.error("[Forcefield] Could not get active tab ID to block content.");
         }
@@ -514,26 +522,54 @@ function updateLevel(index, newLevel) {
 }
 
 // This function will be injected into the content page
-function injectContentScript(blockListToUse, debugMode) {
+function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
     // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse, "Debug Mode:", debugMode);
 
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight'; // For potential CSS targeting
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
+    const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important;'; // display will be set dynamically
 
     // First, reset all previously affected elements by this script
-    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}], .${debugHighlightClass}`);
+    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}]`); // Simplified selector
     previouslyAffected.forEach(el => {
-        el.style.display = ''; // Reset display
-        el.style.border = ''; // Reset border
-        el.style.backgroundColor = ''; // Reset background
+        // Restore original styles if they were saved
+        if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
+        else el.style.display = '';
+
+        if (el.dataset.originalVisibility) el.style.visibility = el.dataset.originalVisibility;
+        else el.style.visibility = '';
+        
+        if (el.dataset.originalBorder) el.style.border = el.dataset.originalBorder;
+        else el.style.border = '';
+
+        if (el.dataset.originalBackgroundColor) el.style.backgroundColor = el.dataset.originalBackgroundColor;
+        else el.style.backgroundColor = '';
+
+        if (el.dataset.originalWidth) el.style.width = el.dataset.originalWidth;
+        else el.style.width = '';
+
+        if (el.dataset.originalHeight) el.style.height = el.dataset.originalHeight;
+        else el.style.height = '';
+        
+        el.innerHTML = el.dataset.originalInnerHTML || ''; // Restore content if whiteboxed
+
         el.classList.remove(debugHighlightClass);
+        // Clean up all our custom dataset attributes
         delete el.dataset[hiddenMarker];
+        delete el.dataset.originalDisplay;
+        delete el.dataset.originalVisibility;
+        delete el.dataset.originalBorder;
+        delete el.dataset.originalBackgroundColor;
+        delete el.dataset.originalWidth;
+        delete el.dataset.originalHeight;
+        delete el.dataset.originalInnerHTML;
+
         // Attempt to revert any other inline styles that might have been set for visibility
-        if (el.style.visibility === 'hidden' || el.style.display === 'none') {
-             el.style.visibility = 'revert';
-             el.style.display = 'revert';
-        }
+        // if (el.style.visibility === 'hidden' || el.style.display === 'none') {
+        //      el.style.visibility = 'revert';
+        //      el.style.display = 'revert';
+        // }
     });
 
     // Helper function to normalize different apostrophe/single quote characters
@@ -557,7 +593,9 @@ function injectContentScript(blockListToUse, debugMode) {
             //     continue;
             // }
             // Simpler skip: if it's display: none and we didn't do it, skip. If debug, we might unhide.
-            if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
+            // For whitebox mode, we don't want to skip elements that are display: none, as we might want to "whitebox" them if they contain blocked content.
+            // Only skip if it's display: none AND we didn't hide/whitebox it AND it's not debug mode.
+            if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !debugMode) {
                 continue;
             }
 
@@ -620,6 +658,38 @@ function injectContentScript(blockListToUse, debugMode) {
                             elementToHide.dataset[hiddenMarker] = 'debug'; // Mark as affected by debug
                             elementsAffected++;
                         }
+                    } else if (whiteboxMode) {
+                        if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') {
+                            // console.log(`[Forcefield Whitebox] Applying whitebox (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide);
+                            
+                            // Save original styles and content
+                            elementToHide.dataset.originalDisplay = elementToHide.style.display || '';
+                            elementToHide.dataset.originalVisibility = elementToHide.style.visibility || '';
+                            elementToHide.dataset.originalBorder = elementToHide.style.border || '';
+                            elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
+                            const computedStyle = window.getComputedStyle(elementToHide);
+                            elementToHide.dataset.originalWidth = computedStyle.width;
+                            elementToHide.dataset.originalHeight = computedStyle.height;
+                            elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
+
+                            elementToHide.innerHTML = ''; // Clear content
+                            elementToHide.style.cssText += whiteboxStyle; // Apply whitebox styles
+                            // Ensure dimensions are preserved
+                            elementToHide.style.width = elementToHide.dataset.originalWidth;
+                            elementToHide.style.height = elementToHide.dataset.originalHeight;
+                            // Ensure it's displayed as a block or inline-block to hold space
+                            if (computedStyle.display === 'inline') {
+                                elementToHide.style.display = 'inline-block';
+                            } else if (computedStyle.display === 'none' || computedStyle.display === '') {
+                                // If it was originally display:none, or display not set, default to block.
+                                // Content script might have unhidden it.
+                                elementToHide.style.display = 'block';
+                            } else {
+                                elementToHide.style.display = computedStyle.display; // Keep original display type if not inline/none
+                            }
+                            elementToHide.dataset[hiddenMarker] = 'whiteboxed';
+                            elementsAffected++;
+                        }
                     } else {
                         if (elementToHide.style.display !== 'none') {
                             // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
@@ -628,8 +698,8 @@ function injectContentScript(blockListToUse, debugMode) {
                             elementsAffected++;
                         }
                     }
-                } else if (elementToHide && (elementToHide.style.display === 'none' || elementToHide.classList.contains(debugHighlightClass))) {
-                    // Element already hidden by us, or highlighted by us. Do nothing.
+                } else if (elementToHide && elementToHide.dataset[hiddenMarker]) { // Check if already marked by us
+                    // Element already hidden by us, or highlighted by us, or whiteboxed by us. Do nothing.
                 } else if (elementToHide === document.body || elementToHide === document.documentElement) {
                      // Log if we still somehow ended up targeting body/html (e.g., original element was body/html and level was 0)
                      console.warn(`[Forcefield] Avoided affecting BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
@@ -985,12 +1055,42 @@ function handleDebugModeChange() {
     const isDebugMode = debugModeCheckbox.checked;
     chrome.storage.local.set({ debugMode: isDebugMode }, () => {
         console.log(`[Forcefield] Debug mode set to: ${isDebugMode}`);
+        if (isDebugMode && whiteboxModeCheckbox.checked) {
+            whiteboxModeCheckbox.checked = false; // Turn off whitebox if debug is turned on
+            handleWhiteboxModeChange(false); // Update storage for whitebox
+        }
         // Re-trigger blocking on the current page to apply the new mode
         chrome.storage.local.get(['blockList'], (result) => {
             const blockList = result.blockList || [];
-            // No need to re-trigger if blocklist is empty, but it's harmless
             triggerPageBlock(blockList, isDebugMode);
         });
+    });
+}
+
+// New function to load whitebox mode state
+function loadWhiteboxModeState() {
+    chrome.storage.local.get(['whiteboxMode'], (result) => {
+        whiteboxModeCheckbox.checked = result.whiteboxMode || false;
+    });
+}
+
+// New function to save whitebox mode state and re-trigger blocking
+function handleWhiteboxModeChange(triggerBlock = true) {
+    const isWhiteboxMode = whiteboxModeCheckbox.checked;
+    chrome.storage.local.set({ whiteboxMode: isWhiteboxMode }, () => {
+        console.log(`[Forcefield] Whitebox mode set to: ${isWhiteboxMode}`);
+        if (isWhiteboxMode && debugModeCheckbox.checked) {
+            debugModeCheckbox.checked = false; // Turn off debug if whitebox is turned on
+            handleDebugModeChange(); // This will re-trigger page block
+            return; // Avoid double trigger
+        }
+        if (triggerBlock) {
+            chrome.storage.local.get(['blockList', 'debugMode'], (result) => {
+                const blockList = result.blockList || [];
+                const debugMode = result.debugMode || false; // Get current debug mode
+                triggerPageBlock(blockList, debugMode); // Pass debugMode here
+            });
+        }
     });
 }
 
