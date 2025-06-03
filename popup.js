@@ -19,7 +19,7 @@ const whiteboxModeCheckbox = document.getElementById('whiteboxModeCheckbox');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Kept for the manual "Suggest Blocks (AI)" feature in popup.js
-const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY';
+// const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY'; // Will be replaced by stored key
 // --- END INSECURE SECTION --- //
 
 // Default AI System Prompt (kept for popup.js features)
@@ -57,12 +57,17 @@ const AVAILABLE_AI_MODELS = {
 };
 const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
 
+// Get new API Key elements
+const anthropicApiKeyInput = document.getElementById('anthropicApiKey');
+const saveAnthropicApiKeyButton = document.getElementById('saveAnthropicApiKey');
+
 // Load and display the blocklist and system prompt when the popup opens
 document.addEventListener('DOMContentLoaded', () => {
     loadBlockList();
     loadSystemPrompt();
     loadUserPromptPrefix();
     loadAiModelSelection();
+    loadApiKeys(); // Load API keys
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
     loadWhiteboxModeState(); // Added for whitebox mode
@@ -105,6 +110,9 @@ resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
 
 // Add listener for AI Model selection change
 aiModelSelect.addEventListener('change', saveAiModelSelection);
+
+// Add listeners for API Key buttons
+saveAnthropicApiKeyButton.addEventListener('click', () => saveApiKey('anthropicApiKey', anthropicApiKeyInput.value));
 
 // Add listener for Debug Mode checkbox
 debugModeCheckbox.addEventListener('change', handleDebugModeChange);
@@ -717,6 +725,32 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
     blockListedContent(blockListToUse);
 }
 
+// --- New API Key Management Functions ---
+function loadApiKeys() {
+    chrome.storage.sync.get(['anthropicApiKey'], (result) => {
+        if (result.anthropicApiKey) {
+            anthropicApiKeyInput.value = result.anthropicApiKey;
+        }
+        console.log('[Forcefield Popup] API Keys loaded.');
+    });
+}
+
+function saveApiKey(keyName, keyValue) {
+    if (keyValue && keyValue.trim() !== "") {
+        chrome.storage.sync.set({ [keyName]: keyValue.trim() }, () => {
+            console.log(`[Forcefield Popup] ${keyName} saved.`);
+            alert(`${keyName.replace('ApiKey', ' API Key')} saved!`);
+        });
+    } else {
+        // Optionally clear the key if the input is empty
+        chrome.storage.sync.remove(keyName, () => {
+            console.log(`[Forcefield Popup] ${keyName} cleared.`);
+            alert(`${keyName.replace('ApiKey', ' API Key')} cleared.`);
+        });
+    }
+}
+// --- End API Key Management Functions ---
+
 // --- New AI Suggestion Functionality --- 
 
 // Utility function to log messages to the active tab's console
@@ -789,6 +823,19 @@ async function getAiSuggestions() {
                     // Log extracted text length to page console
                     await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted text length:', pageText.length);
 
+                    // Get the Anthropic API Key from storage
+                    const storedKeys = await new Promise((resolve) => {
+                        chrome.storage.sync.get(['anthropicApiKey'], resolve);
+                    });
+                    const anthropicApiKey = storedKeys.anthropicApiKey;
+
+                    if (!anthropicApiKey) {
+                        alert('Anthropic API Key is not set. Please set it in the settings.');
+                        aiSuggestButton.textContent = 'Suggest Blocks (AI)';
+                        aiSuggestButton.disabled = false;
+                        return;
+                    }
+
                     // Prepare the prompt and API request
                     const userPrompt = `${currentUserPromptPrefix}${pageText}${DEFAULT_USER_PROMPT_SUFFIX}`;
 
@@ -815,7 +862,7 @@ async function getAiSuggestions() {
                     const response = await fetch('https://api.anthropic.com/v1/messages', {
                         method: 'POST',
                         headers: {
-                            'x-api-key': ANTHROPIC_API_KEY,
+                            'x-api-key': anthropicApiKey, // Use the stored key
                             'anthropic-version': '2023-06-01',
                             'content-type': 'application/json',
                             // Required header for direct browser access - ACKNOWLEDGES SECURITY RISK

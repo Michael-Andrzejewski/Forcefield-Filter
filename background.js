@@ -1,6 +1,6 @@
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Replace with a secure method
-const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY';
+// const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY'; // Will be replaced by stored key
 // --- END INSECURE SECTION --- //
 
 // Default AI System Prompt
@@ -395,12 +395,13 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
         }
 
         try {
-            const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning, storageDebugMode] = await Promise.all([
+            const [storageSystemPrompt, storageUserPrompt, storageModel, storageIsScanning, storageDebugMode, storedApiKeys] = await Promise.all([
                 chrome.storage.sync.get(['customSystemPrompt']),
                 chrome.storage.sync.get(['customUserPromptPrefix']),
                 chrome.storage.sync.get(['selectedAiModel']),
                 chrome.storage.local.get(['isScanning']),
-                chrome.storage.local.get(['debugMode'])
+                chrome.storage.local.get(['debugMode']),
+                chrome.storage.sync.get(['anthropicApiKey']) // Fetch Anthropic API Key
             ]);
 
             if (!storageIsScanning.isScanning) {
@@ -419,6 +420,15 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
             const currentUserPromptPrefix = storageUserPrompt.customUserPromptPrefix !== undefined ? storageUserPrompt.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
             const selectedModel = storageModel.selectedAiModel || DEFAULT_AI_MODEL;
             const currentAiModel = AVAILABLE_AI_MODELS[selectedModel] ? selectedModel : DEFAULT_AI_MODEL;
+            const anthropicApiKey = storedApiKeys.anthropicApiKey; // Get the key
+
+            if (!anthropicApiKey) {
+                console.error(`${logPrefix} Anthropic API Key not found in storage.`);
+                logToPageConsole(tabId, `[Forcefield AI #${callId}] Error: Anthropic API Key not set. Continuous scanning AI features disabled.`);
+                chrome.runtime.sendMessage({ command: "scanningStateChanged", status: "Error: Anthropic API Key missing."}).catch(e => {});
+                safeSendResponse({status: "AI processing error: Anthropic API Key missing"});
+                return; // Stop if key is missing
+            }
 
             const userPrompt = `${currentUserPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
             const requestBody = {
@@ -435,7 +445,7 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
             const response = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
                 headers: {
-                    'x-api-key': ANTHROPIC_API_KEY,
+                    'x-api-key': anthropicApiKey, // Use the stored key
                     'anthropic-version': '2023-06-01',
                     'content-type': 'application/json',
                     'anthropic-dangerous-direct-browser-access': 'true'
