@@ -1,8 +1,3 @@
-// --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
-// Replace with a secure method
-// const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY'; // Will be replaced by stored key
-// --- END INSECURE SECTION --- //
-
 // Default AI System Prompt
 const DEFAULT_SYSTEM_PROMPT = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
 
@@ -34,7 +29,8 @@ const AVAILABLE_AI_MODELS = {
     'claude-3-5-sonnet-20240620': 'Claude 3.5 Sonnet (New)',
     'claude-3-opus-20240229': 'Claude 3 Opus',
     'claude-3-sonnet-20240229': 'Claude 3 Sonnet (Older)',
-    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku'
+    'claude-3-haiku-20240307': 'Claude 3 Haiku',
+    'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet (Future)'
 };
 const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
 
@@ -347,6 +343,116 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
     return blockList; 
 }
 
+async function refinePromptsWithAI(selectedText, tabId) {
+    const logPrefix = `[Forcefield Prompt Refine - Tab ${tabId}]`;
+    console.log(`${logPrefix} Starting prompt refinement...`);
+    logToPageConsole(tabId, '[Forcefield AI] Starting prompt refinement based on selected text.');
+
+    try {
+        const [storageSystemPrompt, storageUserPrompt, storedApiKeys] = await Promise.all([
+            chrome.storage.sync.get(['customSystemPrompt']),
+            chrome.storage.sync.get(['customUserPromptPrefix']),
+            chrome.storage.sync.get(['anthropicApiKey'])
+        ]);
+
+        const anthropicApiKey = storedApiKeys.anthropicApiKey;
+        if (!anthropicApiKey) {
+            console.error(`${logPrefix} Anthropic API Key not found.`);
+            logToPageConsole(tabId, `[Forcefield AI] Error: Anthropic API Key not set. Cannot refine prompts.`);
+            return;
+        }
+
+        const currentSystemPrompt = storageSystemPrompt.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+        const currentUserPromptPrefix = storageUserPrompt.customUserPromptPrefix !== undefined ? storageUserPrompt.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
+
+        const metaSystemPrompt = `You are an AI assistant that refines prompts for another AI. The other AI's task is to identify and tag negative content on web pages. You will be given the other AI's current system prompt, its user prompt prefix, and an example of text that it should have blocked but didn't. Your task is to revise the system prompt and user prefix to better block similar content in the future. Output the revised prompts inside <system_prompt> and </system_prompt> tags, and <user_prefix> and </user_prefix> tags. Do not include any other text in your response.`;
+
+        const metaUserPrompt = `Current System Prompt:\n---\n${currentSystemPrompt}\n---\n\nCurrent User Prefix:\n---\n${currentUserPromptPrefix}\n---\n\nExample text to block:\n---\n${selectedText}\n---`;
+
+        const requestBody = {
+            model: 'claude-3-5-sonnet-20240620',
+            max_tokens: 4096,
+            temperature: 0.5,
+            system: metaSystemPrompt,
+            messages: [{ role: "user", content: metaUserPrompt }]
+        };
+        
+        console.log(`${logPrefix} Sending prompt refinement request to AI.`);
+        logToPageConsole(tabId, '[Forcefield AI] Sending request to refine prompts...');
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'x-api-key': anthropicApiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json',
+                'anthropic-dangerous-direct-browser-access': 'true'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorBodyText = await response.text();
+            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBodyText}`);
+        }
+
+        const result = await response.json();
+        console.log(`${logPrefix} AI Refinement Response:`, result);
+        logToPageConsole(tabId, `[Forcefield AI] Received refinement response:`, result);
+
+        let aiResponseContent = '';
+        if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
+            aiResponseContent = result.content[0].text;
+        }
+
+        const systemPromptRegex = /<system_prompt>([\s\S]*?)<\/system_prompt>/;
+        const userPrefixRegex = /<user_prefix>([\s\S]*?)<\/user_prefix>/;
+
+        const newSystemPromptMatch = aiResponseContent.match(systemPromptRegex);
+        const newUserPrefixMatch = aiResponseContent.match(userPrefixRegex);
+
+        let updated = false;
+        const updates = {};
+        if (newSystemPromptMatch && newSystemPromptMatch[1]) {
+            const newSystemPrompt = newSystemPromptMatch[1].trim();
+            updates.customSystemPrompt = newSystemPrompt;
+            console.log(`${logPrefix} Found new system prompt.`);
+            logToPageConsole(tabId, `[Forcefield AI] Found new system prompt.`);
+            updated = true;
+        } else {
+             console.warn(`${logPrefix} No <system_prompt> tag found in AI response.`);
+             logToPageConsole(tabId, `[Forcefield AI] Warning: No <system_prompt> tag found in AI response.`);
+        }
+
+        if (newUserPrefixMatch && newUserPrefixMatch[1]) {
+            const newUserPrefix = newUserPrefixMatch[1].trim();
+            updates.customUserPromptPrefix = newUserPrefix;
+            console.log(`${logPrefix} Found new user prefix.`);
+            logToPageConsole(tabId, `[Forcefield AI] Found new user prefix.`);
+            updated = true;
+        } else {
+            console.warn(`${logPrefix} No <user_prefix> tag found in AI response.`);
+            logToPageConsole(tabId, `[Forcefield AI] Warning: No <user_prefix> tag found in AI response.`);
+        }
+
+        if (updated) {
+            await chrome.storage.sync.set(updates);
+            console.log(`${logPrefix} Successfully updated prompts in storage.`);
+            logToPageConsole(tabId, `[Forcefield AI] Prompts have been updated! Please review them in the extension popup.`);
+            chrome.notifications.create({
+                type: 'basic',
+                iconUrl: 'icon48.png',
+                title: 'Forcefield Prompts Updated',
+                message: 'The AI has refined your blocking prompts. Check the popup to see the changes.'
+            });
+        }
+
+    } catch (error) {
+        console.error(`${logPrefix} Error during prompt refinement:`, error);
+        logToPageConsole(tabId, `[Forcefield AI] Error during prompt refinement:`, error.message);
+    }
+}
+
 async function processNewContentWithAIBackground(text, tabId, originalSendResponse) {
     aiCallCounter++;
     const callId = aiCallCounter;
@@ -608,6 +714,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else {
             sendResponse({tabId: null});
         }
+    } else if (request.command === "elementSelected") {
+        console.log(`[Forcefield Background] Element selected with text:`, request.text);
+        refinePromptsWithAI(request.text, sender.tab.id);
+        sendResponse({status: "AI prompt refinement started"});
+        return true; // async response
     }
 
     return true;
