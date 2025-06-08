@@ -719,6 +719,23 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         refinePromptsWithAI(request.text, sender.tab.id);
         sendResponse({status: "AI prompt refinement started"});
         return true; // async response
+    } else if (request.command === "addAndBlockSelectedText") {
+        console.log(`[Forcefield Background] Adding selected text to blocklist:`, request.text);
+        if (request.text) {
+            // Add the single text item as a suggestion. We can reuse the addSuggestedWords function.
+            // Using a default level of 1 and a specific source.
+            addSuggestedWords([request.text], 1, 'user_selected', sender.tab.id).then(updatedBlockList => {
+                // After adding, re-trigger the page block with the full updated list.
+                chrome.storage.local.get(['debugMode'], (result) => {
+                    const debugMode = result.debugMode || false;
+                    triggerPageBlock(sender.tab.id, updatedBlockList, debugMode);
+                    sendResponse({status: "Text added and page re-blocked."});
+                });
+            });
+        } else {
+            sendResponse({status: "No text provided to block."});
+        }
+        return true; // async response
     }
 
     return true;

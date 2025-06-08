@@ -57,10 +57,18 @@
 
         if (lastTarget) {
             const text = lastTarget.innerText || lastTarget.textContent || '';
-            console.log('[Forcefield] Element selected. Text:', text.trim());
-             if (chrome.runtime && chrome.runtime.sendMessage) {
-                chrome.runtime.sendMessage({ command: "elementSelected", text: text.trim() });
+            const trimmedText = text.trim();
+            console.log('[Forcefield] Element selected. Text:', trimmedText);
+
+            if (chrome.runtime && chrome.runtime.sendMessage) {
+                // Send message for prompt refinement
+                chrome.runtime.sendMessage({ command: "elementSelected", text: trimmedText });
+                // Send message to add to blocklist and re-block the page
+                chrome.runtime.sendMessage({ command: "addAndBlockSelectedText", text: trimmedText });
             }
+
+            // Hide the selected element immediately
+            lastTarget.style.display = 'none';
         }
 
         cleanup();
