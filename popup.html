@@ -101,6 +101,16 @@
     <p id="scanningStatus" style="font-size: 0.8em; margin-top: 5px;"></p>
   </div>
 
+  <div id="allowedSitesContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
+    <h4 style="margin-top: 0; margin-bottom: 5px;">Allowed Sites for Scanning:</h4>
+    <div id="siteInputContainer" style="display: flex; margin-bottom: 10px;">
+        <input type="text" id="siteInput" placeholder="example.com" style="flex-grow: 1; margin-right: 5px;">
+        <button id="addSiteButton">Add</button>
+    </div>
+    <div id="allowedSitesList" style="display: flex; flex-wrap: wrap; gap: 5px;"></div>
+    <p style="font-size: 0.8em; color: #666; margin-top: 5px;">Continuous scanning will only run on these sites.</p>
+  </div>
+
   <div id="apiKeysContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
     <h4 style="margin-top: 0; margin-bottom: 5px;">API Keys:</h4>
     <div style="margin-bottom: 10px;">

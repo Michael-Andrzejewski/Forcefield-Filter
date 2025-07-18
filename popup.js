@@ -18,6 +18,11 @@ const scanningStatus = document.getElementById('scanningStatus');
 const debugModeCheckbox = document.getElementById('debugModeCheckbox');
 const whiteboxModeCheckbox = document.getElementById('whiteboxModeCheckbox');
 
+// --- New elements for Allowed Sites ---
+const siteInput = document.getElementById('siteInput');
+const addSiteButton = document.getElementById('addSiteButton');
+const allowedSitesListDiv = document.getElementById('allowedSitesList');
+
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Kept for the manual "Suggest Blocks (AI)" feature in popup.js
 // const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY'; // Will be replaced by stored key
@@ -74,6 +79,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserPromptPrefix();
     loadAiModelSelection();
     loadApiKeys(); // Load API keys
+    loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
     loadWhiteboxModeState(); // Added for whitebox mode
@@ -85,6 +91,14 @@ wordInput.addEventListener('keypress', (e) => {
   if (e.key === 'Enter') {
     addWord();
   }
+});
+
+// Add listeners for new Allowed Sites functionality
+addSiteButton.addEventListener('click', addSite);
+siteInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+        addSite();
+    }
 });
 
 // Trigger content script
@@ -150,6 +164,84 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true; 
 });
 
+// --- New functions for Allowed Sites ---
+
+function loadAllowedSites() {
+    chrome.storage.sync.get(['allowedSites'], (result) => {
+        const sites = result.allowedSites || ['twitter.com', 'x.com', 'quora.com']; // Default sites
+        // If it's the first time, set the default list in storage
+        if (!result.allowedSites) {
+            chrome.storage.sync.set({ allowedSites: sites });
+        }
+        displayAllowedSites(sites);
+    });
+}
+
+function displayAllowedSites(sites) {
+    allowedSitesListDiv.innerHTML = '';
+    sites.forEach((site, index) => {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
+
+        const text = document.createElement('span');
+        text.textContent = site;
+        tag.appendChild(text);
+
+        const removeButton = document.createElement('button');
+        removeButton.textContent = 'x';
+        removeButton.title = 'Remove Site';
+        removeButton.addEventListener('click', () => removeSite(index));
+        tag.appendChild(removeButton);
+
+        allowedSitesListDiv.appendChild(tag);
+    });
+}
+
+function addSite() {
+    const newSite = siteInput.value.trim().toLowerCase();
+    if (newSite) {
+        // A simple validation to remove "http://", "https://", "www." prefixes
+        const formattedSite = newSite.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+
+        if (!formattedSite) {
+            siteInput.value = '';
+            return;
+        }
+
+        chrome.storage.sync.get(['allowedSites'], (result) => {
+            let sites = result.allowedSites || [];
+            if (!sites.includes(formattedSite)) {
+                sites.push(formattedSite);
+                chrome.storage.sync.set({ allowedSites: sites }, () => {
+                    console.log(`[Forcefield] Added "${formattedSite}" to allowed sites.`);
+                    displayAllowedSites(sites);
+                    siteInput.value = '';
+                    // After adding a site, we should re-evaluate the scanning state
+                    loadScanningState();
+                });
+            } else {
+                console.log(`[Forcefield] Site "${formattedSite}" is already in the allowed list.`);
+                siteInput.value = '';
+            }
+        });
+    }
+}
+
+function removeSite(indexToRemove) {
+    chrome.storage.sync.get(['allowedSites'], (result) => {
+        let sites = result.allowedSites || [];
+        const removedSite = sites.splice(indexToRemove, 1)[0];
+        chrome.storage.sync.set({ allowedSites: sites }, () => {
+            console.log(`[Forcefield] Removed "${removedSite}" from allowed sites.`);
+            displayAllowedSites(sites);
+            // After removing a site, we should re-evaluate the scanning state
+            loadScanningState();
+        });
+    });
+}
+
+// --- End new functions for Allowed Sites ---
+
 function updateScanningStatus(statusText) {
     if (scanningStatus) {
         scanningStatus.textContent = statusText;
@@ -158,8 +250,24 @@ function updateScanningStatus(statusText) {
 }
 
 async function loadScanningState() {
-    chrome.storage.local.get(['isScanning'], (result) => {
+    chrome.storage.local.get(['isScanning'], async (result) => {
         const isScanningGlobally = result.isScanning || false;
+
+        // Check if the current tab is an allowed site
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        const currentTab = tabs[0];
+        const isAllowedSite = await checkIsOnAllowedSite(currentTab);
+
+        if (!isAllowedSite) {
+            startScanningButton.style.display = 'inline-block';
+            stopScanningButton.style.display = 'none';
+            startScanningButton.disabled = true; // Disable the button
+            updateScanningStatus('Site not on allowed list.');
+            return; // Stop further processing
+        }
+        
+        // Site is allowed, proceed with normal logic
+        startScanningButton.disabled = false; // Re-enable if it was disabled
 
         if (isScanningGlobally) {
             startScanningButton.style.display = 'none';
@@ -218,6 +326,29 @@ async function loadScanningState() {
             stopScanningButton.style.display = 'none';
             updateScanningStatus('Scanning inactive.');
         }
+    });
+}
+
+// Helper function to check if the current tab's URL is in the allowed list
+async function checkIsOnAllowedSite(tab) {
+    if (!tab || !tab.url) return false;
+
+    return new Promise((resolve) => {
+        chrome.storage.sync.get(['allowedSites'], (result) => {
+            const sites = result.allowedSites || [];
+            if (sites.length === 0) {
+                resolve(true); // If list is empty, allow all sites
+                return;
+            }
+            try {
+                const tabHostname = new URL(tab.url).hostname;
+                const match = sites.some(site => tabHostname.endsWith(site));
+                resolve(match);
+            } catch (e) {
+                console.warn("[Forcefield] Could not parse current tab URL:", tab.url, e);
+                resolve(false);
+            }
+        });
     });
 }
 
