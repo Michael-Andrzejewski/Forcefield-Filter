@@ -675,12 +675,33 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
 
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight'; // For potential CSS targeting
-    const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
-    const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important;'; // display will be set dynamically
+    const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important; position: relative;'; // Added position relative
+    const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important; position: relative;'; // Added position relative
+    const refineButtonStyle = `
+        position: absolute;
+        top: 2px;
+        right: 2px;
+        z-index: 99999999;
+        padding: 2px 5px;
+        font-size: 10px;
+        background-color: #007bff;
+        color: white;
+        border: none;
+        border-radius: 3px;
+        cursor: pointer;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    `;
+
 
     // First, reset all previously affected elements by this script
     const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}]`); // Simplified selector
     previouslyAffected.forEach(el => {
+        // Remove the refine button if it exists
+        const oldButton = el.querySelector('.forcefield-refine-button');
+        if (oldButton) {
+            oldButton.remove();
+        }
+
         // Restore original styles if they were saved
         if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
         else el.style.display = '';
@@ -712,6 +733,7 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
         delete el.dataset.originalWidth;
         delete el.dataset.originalHeight;
         delete el.dataset.originalInnerHTML;
+        delete el.dataset.blockedContent; // Clean up blocked content data
 
         // Attempt to revert any other inline styles that might have been set for visibility
         // if (el.style.visibility === 'hidden' || el.style.display === 'none') {
@@ -756,6 +778,7 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                 if (childNode.nodeType === 3 && childNode.nodeValue && childNode.nodeValue.trim()) {
                     // Normalize and lower-case the text node's value
                     const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
+                    const originalText = childNode.nodeValue.trim(); // Keep original case for sending to AI
 
                     // Check if this text contains any blocked word/phrase (normalized)
                     for (const item of blockList) {
@@ -765,6 +788,7 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                         if (normalizedNodeText.includes(normalizedBlockText)) {
                             foundMatch = element; // The element containing the text node is the target
                             matchedBlockItem = item; // Store the matched item
+                            foundMatch.dataset.blockedContent = originalText; // Store the original text content
                             break; // Found a match for this text node, stop checking blocklist items
                         }
                     }
@@ -797,6 +821,38 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                 // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
                 if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
 
+                    const createRefineButton = (targetElement) => {
+                        const button = document.createElement('button');
+                        button.innerText = 'Refine AI';
+                        button.title = 'Tell AI this was a mistake';
+                        button.style.cssText = refineButtonStyle;
+                        button.className = 'forcefield-refine-button';
+                        button.onclick = (e) => {
+                            e.stopPropagation(); // Prevent any other clicks
+                            const contentToRefine = targetElement.dataset.blockedContent || targetElement.innerText;
+                            console.log('[Forcefield] Refining with text:', contentToRefine);
+
+                            // Send message to background script
+                            chrome.runtime.sendMessage({
+                                command: "refineSystemPrompt",
+                                text: contentToRefine
+                            }, (response) => {
+                                console.log('[Forcefield] Refinement response:', response);
+                            });
+
+                            // Visually restore the element immediately for the user
+                            targetElement.style.display = targetElement.dataset.originalDisplay || 'revert';
+                            targetElement.style.visibility = 'revert';
+                            targetElement.style.backgroundColor = targetElement.dataset.originalBackgroundColor || 'revert';
+                            targetElement.style.border = targetElement.dataset.originalBorder || 'revert';
+                            if (targetElement.dataset.originalInnerHTML) {
+                                targetElement.innerHTML = targetElement.dataset.originalInnerHTML;
+                            }
+                            button.remove(); // Remove the button itself
+                        };
+                        targetElement.appendChild(button);
+                    };
+
                     // Hide the element and mark it or highlight it
                     if (debugMode) {
                         if (!elementToHide.classList.contains(debugHighlightClass)) {
@@ -804,6 +860,7 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                             elementToHide.style.cssText += debugHighlightStyle; // Append to existing styles
                             elementToHide.classList.add(debugHighlightClass);
                             elementToHide.dataset[hiddenMarker] = 'debug'; // Mark as affected by debug
+                            createRefineButton(elementToHide); // Add button
                             elementsAffected++;
                         }
                     } else if (whiteboxMode) {
@@ -836,13 +893,17 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                                 elementToHide.style.display = computedStyle.display; // Keep original display type if not inline/none
                             }
                             elementToHide.dataset[hiddenMarker] = 'whiteboxed';
+                            createRefineButton(elementToHide); // Add button
                             elementsAffected++;
                         }
                     } else {
                         if (elementToHide.style.display !== 'none') {
                             // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
+                            elementToHide.dataset.originalDisplay = elementToHide.style.display || ''; // Save original display
                             elementToHide.style.display = 'none';
                             elementToHide.dataset[hiddenMarker] = 'true'; // Mark as hidden
+                            // NOTE: We don't add a button here because the element is not visible for the user to click it.
+                            // The "refine" feature is primarily for visible feedback mechanisms like debug and whitebox mode.
                             elementsAffected++;
                         }
                     }

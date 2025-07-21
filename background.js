@@ -131,6 +131,113 @@ function getDefaultLevelForSite(url) {
     return defaultLevel;
 }
 
+// Function to handle the AI prompt refinement process
+async function refineSystemPromptWithAI(incorrectlyBlockedText, tabId) {
+    console.log('[Forcefield BG] Starting system prompt refinement for text:', incorrectlyBlockedText);
+
+    // 1. Get current settings from storage
+    const storedData = await new Promise((resolve) => {
+        chrome.storage.sync.get(['customSystemPrompt', 'selectedAiModel', 'anthropicApiKey'], resolve);
+    });
+
+    const systemPrompt = storedData.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const model = storedData.selectedAiModel || DEFAULT_AI_MODEL;
+    const apiKey = storedData.anthropicApiKey;
+
+    if (!apiKey) {
+        console.error('[Forcefield BG] Refinement failed: Anthropic API Key is not set.');
+        // Notify the user on the page that the key is missing
+        if (tabId) {
+            logToPageConsole(tabId, '[Forcefield] ERROR: Cannot refine prompt. Anthropic API key is missing. Please set it in the extension settings.');
+        }
+        return;
+    }
+
+    // 2. Construct the specialized prompt for refinement
+    const refinementPrompt = `The user has indicated that the following text was incorrectly blocked by the AI.
+Original System Prompt:
+---
+${systemPrompt}
+---
+Incorrectly Blocked Text:
+---
+"${incorrectlyBlockedText}"
+---
+Your task is to analyze the original system prompt and the incorrectly blocked text. Modify the system prompt to be more precise or nuanced, so it will avoid blocking similar, non-negative text in the future, while still effectively blocking genuinely negative content.
+
+Do NOT apologize or explain your reasoning.
+ONLY return the complete, new, refined system prompt. Do not include any other text, titles, or formatting.
+The output should be ready to be used directly as the new system prompt.`;
+
+
+    const requestBody = {
+        model: model,
+        max_tokens: 4096,
+        temperature: 0.5, // Use a moderate temperature for creative but controlled rewriting
+        messages: [{
+            role: "user",
+            content: refinementPrompt
+        }]
+    };
+
+    console.log('[Forcefield BG] Sending refinement request to AI...');
+
+    try {
+        // 3. Make the API call
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'x-api-key': apiKey,
+                'anthropic-version': '2023-06-01',
+                'content-type': 'application/json'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (!response.ok) {
+            const errorBody = await response.text();
+            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
+        }
+
+        const result = await response.json();
+        console.log('[Forcefield BG] Received AI response for refinement:', result);
+
+        if (result.content && result.content[0] && result.content[0].type === 'text') {
+            const newSystemPrompt = result.content[0].text.trim();
+
+            // 4. Save the new prompt to storage
+            await chrome.storage.sync.set({ customSystemPrompt: newSystemPrompt });
+            console.log('[Forcefield BG] Successfully saved new refined system prompt.');
+
+            // 5. Notify the user
+            chrome.notifications.create({
+                type: 'basic',
+                iconUrl: 'icon128.png', // You'll need to create this icon
+                title: 'Forcefield AI Updated',
+                message: 'The AI system prompt has been refined based on your feedback.'
+            });
+
+            // Optional: Log success message to the content page
+            if (tabId) {
+                logToPageConsole(tabId, '[Forcefield] AI system prompt has been successfully updated.');
+            }
+
+        } else {
+            throw new Error('No valid text content returned from AI.');
+        }
+
+    } catch (error) {
+        console.error('[Forcefield BG] Error during AI prompt refinement:', error);
+        chrome.notifications.create({
+            type: 'basic',
+            iconUrl: 'icon128.png', // You'll need to create this icon
+            title: 'Forcefield AI Error',
+            message: `Failed to refine AI prompt: ${error.message}`
+        });
+    }
+}
+
+
 // We need the actual function that does the blocking
 function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) {
     function normalizeApostrophes(str) {
@@ -581,6 +688,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             });
             await triggerPageBlock(sender.tab.id, blockList, debugMode, whiteboxMode);
             sendResponse({status: "Blocker triggered"});
+        } else if (request.command === "refineSystemPrompt") {
+            const tabId = sender.tab ? sender.tab.id : null;
+            refineSystemPromptWithAI(request.text, tabId)
+                .then(() => sendResponse({status: "Refinement process initiated."}))
+                .catch(error => console.error('[Forcefield BG] Error handling refineSystemPrompt command:', error));
+            return true; // Indicates async response
         }
     })(); // Immediately-invoked async function
     return true; // Indicates that the response is sent asynchronously
