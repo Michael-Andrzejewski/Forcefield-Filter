@@ -189,7 +189,8 @@ The output should be ready to be used directly as the new system prompt.`;
             headers: {
                 'x-api-key': apiKey,
                 'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
+                'content-type': 'application/json',
+                'anthropic-dangerous-direct-browser-access': 'true'
             },
             body: JSON.stringify(requestBody)
         });

@@ -559,6 +559,16 @@ function displayBlockList(list) {
     });
     tag.appendChild(levelInput);
 
+    // Add a "Refine AI" button if the item was added by AI
+    if (item.source && (item.source === 'ai_manual' || item.source === 'ai_continuous')) {
+        const refineButton = document.createElement('button');
+        refineButton.textContent = 'X'; // Simple X for the button text
+        refineButton.className = 'refine-ai-button'; // New class for styling
+        refineButton.title = 'Refine AI: Mark as incorrect and remove';
+        refineButton.addEventListener('click', () => refineAndRemove(index, item.text));
+        tag.appendChild(refineButton);
+    }
+
     const removeButton = document.createElement('button');
     removeButton.textContent = 'x';
     removeButton.title = 'Remove'; // Add tooltip
@@ -567,6 +577,21 @@ function displayBlockList(list) {
 
     blockListDiv.appendChild(tag);
   });
+}
+
+// Function to handle refining the AI and removing the item
+function refineAndRemove(indexToRemove, textToRefine) {
+    if (confirm(`Are you sure you want to mark "${textToRefine}" as an incorrect block and ask the AI to learn from this?`)) {
+        // 1. Send the text to the background script for refinement
+        console.log(`[Forcefield Popup] Sending "${textToRefine}" for AI prompt refinement.`);
+        chrome.runtime.sendMessage({
+            command: "refineSystemPrompt",
+            text: textToRefine
+        }).catch(err => console.error('[Forcefield Popup] Error sending refinement message:', err));
+
+        // 2. Remove the word from the blocklist locally
+        removeWord(indexToRemove);
+    }
 }
 
 // Function to determine the default block level based on the site URL
@@ -821,38 +846,6 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                 // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
                 if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
 
-                    const createRefineButton = (targetElement) => {
-                        const button = document.createElement('button');
-                        button.innerText = 'Refine AI';
-                        button.title = 'Tell AI this was a mistake';
-                        button.style.cssText = refineButtonStyle;
-                        button.className = 'forcefield-refine-button';
-                        button.onclick = (e) => {
-                            e.stopPropagation(); // Prevent any other clicks
-                            const contentToRefine = targetElement.dataset.blockedContent || targetElement.innerText;
-                            console.log('[Forcefield] Refining with text:', contentToRefine);
-
-                            // Send message to background script
-                            chrome.runtime.sendMessage({
-                                command: "refineSystemPrompt",
-                                text: contentToRefine
-                            }, (response) => {
-                                console.log('[Forcefield] Refinement response:', response);
-                            });
-
-                            // Visually restore the element immediately for the user
-                            targetElement.style.display = targetElement.dataset.originalDisplay || 'revert';
-                            targetElement.style.visibility = 'revert';
-                            targetElement.style.backgroundColor = targetElement.dataset.originalBackgroundColor || 'revert';
-                            targetElement.style.border = targetElement.dataset.originalBorder || 'revert';
-                            if (targetElement.dataset.originalInnerHTML) {
-                                targetElement.innerHTML = targetElement.dataset.originalInnerHTML;
-                            }
-                            button.remove(); // Remove the button itself
-                        };
-                        targetElement.appendChild(button);
-                    };
-
                     // Hide the element and mark it or highlight it
                     if (debugMode) {
                         if (!elementToHide.classList.contains(debugHighlightClass)) {
@@ -860,7 +853,6 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                             elementToHide.style.cssText += debugHighlightStyle; // Append to existing styles
                             elementToHide.classList.add(debugHighlightClass);
                             elementToHide.dataset[hiddenMarker] = 'debug'; // Mark as affected by debug
-                            createRefineButton(elementToHide); // Add button
                             elementsAffected++;
                         }
                     } else if (whiteboxMode) {
@@ -893,17 +885,13 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
                                 elementToHide.style.display = computedStyle.display; // Keep original display type if not inline/none
                             }
                             elementToHide.dataset[hiddenMarker] = 'whiteboxed';
-                            createRefineButton(elementToHide); // Add button
                             elementsAffected++;
                         }
                     } else {
                         if (elementToHide.style.display !== 'none') {
                             // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
-                            elementToHide.dataset.originalDisplay = elementToHide.style.display || ''; // Save original display
                             elementToHide.style.display = 'none';
                             elementToHide.dataset[hiddenMarker] = 'true'; // Mark as hidden
-                            // NOTE: We don't add a button here because the element is not visible for the user to click it.
-                            // The "refine" feature is primarily for visible feedback mechanisms like debug and whitebox mode.
                             elementsAffected++;
                         }
                     }
