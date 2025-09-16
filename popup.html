@@ -4,159 +4,568 @@
   <meta charset="UTF-8">
   <title>Forcefield</title>
   <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    
     body {
-      width: 250px;
-      padding: 10px;
-      font-family: sans-serif;
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+      color: #2c3e50;
     }
-    #inputContainer {
+
+    /* Header with Developer Mode Toggle */
+    .header {
       display: flex;
-      margin-bottom: 10px;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid rgba(52, 152, 219, 0.1);
     }
-    #wordInput {
-      flex-grow: 1;
-      margin-right: 5px;
+
+    .logo {
+      font-size: 18px;
+      font-weight: 600;
+      color: #2c3e50;
     }
-    #blockList {
-      margin-top: 10px;
+
+    .developer-toggle {
+      position: relative;
+    }
+
+    .toggle-switch {
+      width: 44px;
+      height: 24px;
+      background: #bdc3c7;
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .toggle-switch.active {
+      background: linear-gradient(45deg, #3498db, #2ecc71);
+    }
+
+    .toggle-slider {
+      width: 20px;
+      height: 20px;
+      background: white;
+      border-radius: 50%;
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      transition: all 0.3s ease;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+    }
+
+    .toggle-switch.active .toggle-slider {
+      transform: translateX(20px);
+    }
+
+    .toggle-label {
+      font-size: 11px;
+      color: #7f8c8d;
+      margin-bottom: 4px;
+      text-align: center;
+    }
+
+    /* Main Content */
+    .content {
+      padding: 20px;
+    }
+
+    /* Simple Mode Styles */
+    .simple-mode .card {
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(10px);
+      border-radius: 16px;
+      padding: 20px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(52, 152, 219, 0.1);
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.1);
+    }
+
+    .scanning-status {
+      text-align: center;
+      margin-bottom: 24px;
+    }
+
+    .scanning-button {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+    }
+
+    .scanning-button.active {
+      background: linear-gradient(45deg, #2ecc71, #27ae60);
+      color: white;
+    }
+
+    .scanning-button.inactive {
+      background: linear-gradient(45deg, #95a5a6, #7f8c8d);
+      color: white;
+    }
+
+    .scanning-button:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+    }
+
+    .ai-model-section, .sites-section {
+      margin-bottom: 20px;
+    }
+
+    .section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #34495e;
+      margin-bottom: 12px;
+    }
+
+    .ai-model-select {
+      width: 100%;
+      padding: 12px 16px;
+      border: 2px solid rgba(52, 152, 219, 0.2);
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.9);
+      font-size: 14px;
+      color: #2c3e50;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .ai-model-select:focus {
+      outline: none;
+      border-color: #3498db;
+      box-shadow: 0 0 0 3px rgba(52, 152, 219, 0.1);
+    }
+
+    .sites-list {
       display: flex;
       flex-wrap: wrap;
-      gap: 5px;
+      gap: 8px;
     }
-    .tag {
-      background-color: #eee;
-      padding: 2px 8px;
-      border-radius: 10px;
+
+    .site-tag {
+      background: linear-gradient(45deg, #74b9ff, #0984e3);
+      color: white;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
       display: flex;
       align-items: center;
-      font-size: 0.9em;
+      gap: 6px;
     }
-    .tag span {
-      margin-right: 5px;
-    }
-    .tag button {
-      background: none;
+
+    .site-remove {
+      background: rgba(255, 255, 255, 0.3);
       border: none;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
       cursor: pointer;
-      font-size: 1.1em;
-      padding: 0 0 0 5px;
-      line-height: 1;
-      color: #999;
+      color: white;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
     }
-    .tag button:hover {
-      color: #333;
+
+    .add-site-container {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
     }
-    .tag button.refine-ai-button {
-        font-size: 0.8em;
-        font-weight: bold;
-        color: white;
-        background-color: #0d6efd;
-        border-radius: 5px;
-        width: 22px;
-        height: 22px;
-        padding: 0;
-        margin-left: 5px;
-        line-height: 22px; /* Center text vertically */
-        text-align: center;
+
+    .site-input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 2px solid rgba(52, 152, 219, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.9);
+      font-size: 12px;
     }
-    .tag button.refine-ai-button:hover {
-        background-color: #0b5ed7;
-        color: white;
+
+    .add-site-btn {
+      padding: 10px 16px;
+      background: linear-gradient(45deg, #3498db, #2980b9);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
     }
-    .tag input[type=number] { /* Style for the level input */
-      width: 40px; /* Adjust width as needed */
-      margin-left: 8px;
-      margin-right: -5px; /* Pull remove button closer */
-      text-align: center;
-      border: 1px solid #ccc;
+
+    /* Developer Mode Styles */
+    .developer-mode .dev-section {
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(10px);
+      border-radius: 12px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(52, 152, 219, 0.1);
+      overflow: hidden;
+    }
+
+    .dev-section-header {
+      padding: 16px 20px;
+      background: rgba(52, 152, 219, 0.05);
+      border-bottom: 1px solid rgba(52, 152, 219, 0.1);
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      transition: all 0.3s ease;
+    }
+
+    .dev-section-header:hover {
+      background: rgba(52, 152, 219, 0.1);
+    }
+
+    .dev-section-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: #2c3e50;
+    }
+
+    .collapse-icon {
+      font-size: 12px;
+      color: #7f8c8d;
+      transition: transform 0.3s ease;
+    }
+
+    .dev-section.collapsed .collapse-icon {
+      transform: rotate(-90deg);
+    }
+
+    .dev-section-content {
+      padding: 20px;
+      display: block;
+    }
+
+    .dev-section.collapsed .dev-section-content {
+      display: none;
+    }
+
+    /* Tags Section */
+    .tags-container {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .tag {
+      background: rgba(231, 76, 60, 0.1);
+      border: 1px solid rgba(231, 76, 60, 0.3);
+      padding: 6px 12px;
+      border-radius: 20px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #e74c3c;
+    }
+
+    .tag-text {
+      flex: 1;
+    }
+
+    .tag-level {
+      width: 35px;
+      padding: 2px 4px;
+      border: 1px solid rgba(52, 152, 219, 0.3);
       border-radius: 4px;
-      font-size: 0.9em;
-      /* Hide default arrows (optional, but can look cleaner) */
-      -moz-appearance: textfield; /* Firefox */
-    }
-    .tag input[type=number]::-webkit-outer-spin-button,
-    .tag input[type=number]::-webkit-inner-spin-button {
-        -webkit-appearance: none;
-        margin: 0;
-    }
-    #actionButtonContainer {
       text-align: center;
-      margin-top: 15px;
-      border-top: 1px solid #ccc;
-      padding-top: 10px;
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.9);
+    }
+
+    .tag-remove {
+      background: rgba(231, 76, 60, 0.2);
+      border: none;
+      border-radius: 50%;
+      width: 16px;
+      height: 16px;
+      cursor: pointer;
+      color: #e74c3c;
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .add-tag-container {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .tag-input {
+      flex: 1;
+      padding: 10px 12px;
+      border: 2px solid rgba(52, 152, 219, 0.2);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.9);
+      font-size: 12px;
+    }
+
+    .add-tag-btn {
+      padding: 10px 16px;
+      background: linear-gradient(45deg, #e74c3c, #c0392b);
+      border: none;
+      border-radius: 8px;
+      color: white;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* Action Buttons */
+    .action-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .action-btn {
+      padding: 12px 16px;
+      border: none;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.3s ease;
+    }
+
+    .action-btn.primary {
+      background: linear-gradient(45deg, #3498db, #2980b9);
+      color: white;
+    }
+
+    .action-btn.secondary {
+      background: rgba(149, 165, 166, 0.2);
+      color: #2c3e50;
+      border: 1px solid rgba(149, 165, 166, 0.3);
+    }
+
+    .action-btn:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    }
+
+    /* Hidden class for mode switching */
+    .hidden {
+      display: none !important;
     }
   </style>
 </head>
 <body>
-  <div id="inputContainer">
-    <input type="text" id="wordInput" placeholder="Add word or phrase">
-    <button id="addButton">Add</button>
-  </div>
-  <div id="blockList"></div>
-
-  <div id="actionButtonContainer">
-    <button id="blockButton">Block Content on Page</button>
-    <button id="selectAndBlockButton" style="margin-top: 5px;">Select and Block Element</button>
-    <button id="aiSuggestButton" style="margin-top: 5px;">Suggest Blocks (AI)</button>
-    <button id="clearAllButton" style="margin-top: 5px;">Clear All Blocks</button>
-  </div>
-
-  <div id="settingsContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px; text-align: left;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">Settings:</h4>
-    <label for="debugModeCheckbox" style="display: flex; align-items: center;">
-        <input type="checkbox" id="debugModeCheckbox" style="margin-right: 5px;"> Highlight instead of hiding (Debug)
-    </label>
-    <label for="whiteboxModeCheckbox" style="display: flex; align-items: center; margin-top: 5px;">
-        <input type="checkbox" id="whiteboxModeCheckbox" style="margin-right: 5px;"> Replace with white box (preserves layout)
-    </label>
-  </div>
-
-  <div id="continuousScanningContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px; text-align: center;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">Continuous Scanning:</h4>
-    <button id="startScanningButton">Start Scanning</button>
-    <button id="stopScanningButton" style="display: none;">Stop Scanning</button>
-    <p id="scanningStatus" style="font-size: 0.8em; margin-top: 5px;"></p>
-  </div>
-
-  <div id="allowedSitesContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">Allowed Sites for Scanning:</h4>
-    <div id="siteInputContainer" style="display: flex; margin-bottom: 10px;">
-        <input type="text" id="siteInput" placeholder="example.com" style="flex-grow: 1; margin-right: 5px;">
-        <button id="addSiteButton">Add</button>
-    </div>
-    <div id="allowedSitesList" style="display: flex; flex-wrap: wrap; gap: 5px;"></div>
-    <p style="font-size: 0.8em; color: #666; margin-top: 5px;">Continuous scanning will only run on these sites.</p>
-  </div>
-
-  <div id="apiKeysContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">API Keys:</h4>
-    <div style="margin-bottom: 10px;">
-      <label for="anthropicApiKey" style="display: block; margin-bottom: 2px;">Anthropic API Key:</label>
-      <input type="password" id="anthropicApiKey" style="width: calc(98% - 55px); margin-right: 5px;">
-      <button id="saveAnthropicApiKey" style="width: 50px;">Save</button>
+  <!-- Header with Developer Mode Toggle -->
+  <div class="header">
+    <div class="logo">Forcefield</div>
+    <div class="developer-toggle">
+      <div class="toggle-label">Developer</div>
+      <div class="toggle-switch" id="developerModeToggle">
+        <div class="toggle-slider"></div>
+      </div>
     </div>
   </div>
 
-  <div id="aiModelContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">AI Model:</h4>
-    <select id="aiModelSelect" style="width: 98%; margin-bottom: 5px;">
-      <!-- Options will be populated by JavaScript -->
-    </select>
-    <!-- No save button needed, will save on change or on use -->
-  </div>
+  <!-- Main Content Container -->
+  <div class="content" id="mainContent">
+    
+    <!-- Simple Mode UI -->
+    <div id="simpleMode" class="simple-mode">
+      <!-- Scanning Status Card -->
+      <div class="card">
+        <div class="scanning-status">
+          <button class="scanning-button inactive" id="mainScanningButton">
+            <span id="scanningButtonText">Start Scanning</span>
+          </button>
+          <p id="scanningStatus" style="font-size: 12px; margin-top: 8px; color: #7f8c8d;"></p>
+        </div>
+      </div>
 
-  <div id="systemPromptContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">AI System Prompt:</h4>
-    <textarea id="systemPromptText" rows="6" style="width: 98%; margin-bottom: 5px;"></textarea>
-    <button id="saveSystemPromptButton">Save Prompt</button>
-    <button id="resetSystemPromptButton">Reset to Default</button>
-  </div>
+      <!-- AI Model Card -->
+      <div class="card">
+        <div class="ai-model-section">
+          <div class="section-title">AI Model</div>
+          <select class="ai-model-select" id="aiModelSelect">
+            <!-- Options will be populated by JavaScript -->
+          </select>
+        </div>
+      </div>
 
-  <div id="userPromptPrefixContainer" style="margin-top: 15px; border-top: 1px solid #ccc; padding-top: 10px;">
-    <h4 style="margin-top: 0; margin-bottom: 5px;">AI User Prompt Prefix:</h4>
-    <textarea id="userPromptPrefixText" rows="4" style="width: 98%; margin-bottom: 5px;"></textarea>
-    <button id="saveUserPromptPrefixButton">Save Prefix</button>
-    <button id="resetUserPromptPrefixButton">Reset to Default</button>
+      <!-- Sites to Scan Card -->
+      <div class="card">
+        <div class="sites-section">
+          <div class="section-title">Sites to Scan</div>
+          <div class="sites-list" id="allowedSitesList"></div>
+          <div class="add-site-container">
+            <input type="text" class="site-input" id="siteInput" placeholder="example.com">
+            <button class="add-site-btn" id="addSiteButton">Add</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Developer Mode UI -->
+    <div id="developerMode" class="developer-mode hidden">
+      
+      <!-- Scanning Controls Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">Scanning Controls</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div class="scanning-status">
+            <button class="scanning-button inactive" id="devScanningButton">
+              <span id="devScanningButtonText">Start Scanning</span>
+            </button>
+            <p id="devScanningStatus" style="font-size: 12px; margin-top: 8px; color: #7f8c8d;"></p>
+          </div>
+          
+          <div class="action-buttons">
+            <button class="action-btn primary" id="blockButton">Block Content</button>
+            <button class="action-btn secondary" id="selectAndBlockButton">Select Element</button>
+            <button class="action-btn primary" id="aiSuggestButton">AI Suggestions</button>
+            <button class="action-btn secondary" id="clearAllButton">Clear All</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tags Section (Collapsible) -->
+      <div class="dev-section collapsed" id="tagsSection">
+        <div class="dev-section-header">
+          <div class="dev-section-title">Blocked Tags</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div class="add-tag-container">
+            <input type="text" class="tag-input" id="wordInput" placeholder="Add word or phrase">
+            <button class="add-tag-btn" id="addButton">Add</button>
+          </div>
+          <div class="tags-container" id="blockList"></div>
+        </div>
+      </div>
+
+      <!-- AI Model Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">AI Configuration</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div class="ai-model-section">
+            <div class="section-title">AI Model</div>
+            <select class="ai-model-select" id="devAiModelSelect">
+              <!-- Options will be populated by JavaScript -->
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sites Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">Allowed Sites</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div class="sites-section">
+            <div class="sites-list" id="devAllowedSitesList"></div>
+            <div class="add-site-container">
+              <input type="text" class="site-input" id="devSiteInput" placeholder="example.com">
+              <button class="add-site-btn" id="devAddSiteButton">Add</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- API Keys Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">API Keys</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div class="section-title">Anthropic API Key</div>
+          <div class="add-site-container">
+            <input type="password" class="site-input" id="anthropicApiKey" placeholder="Enter API key">
+            <button class="add-site-btn" id="saveAnthropicApiKey">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Settings Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">Debug Settings</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <div style="margin-bottom: 12px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+              <input type="checkbox" id="debugModeCheckbox">
+              Highlight instead of hiding (Debug)
+            </label>
+          </div>
+          <div>
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 12px;">
+              <input type="checkbox" id="whiteboxModeCheckbox">
+              Replace with white box (preserves layout)
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- System Prompt Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">AI System Prompt</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <textarea id="systemPromptText" rows="6" style="width: 100%; padding: 12px; border: 2px solid rgba(52, 152, 219, 0.2); border-radius: 8px; background: rgba(255, 255, 255, 0.9); font-size: 12px; margin-bottom: 8px; resize: vertical; font-family: inherit;"></textarea>
+          <div class="action-buttons">
+            <button class="action-btn primary" id="saveSystemPromptButton">Save Prompt</button>
+            <button class="action-btn secondary" id="resetSystemPromptButton">Reset Default</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- User Prompt Prefix Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">AI User Prompt Prefix</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <textarea id="userPromptPrefixText" rows="4" style="width: 100%; padding: 12px; border: 2px solid rgba(52, 152, 219, 0.2); border-radius: 8px; background: rgba(255, 255, 255, 0.9); font-size: 12px; margin-bottom: 8px; resize: vertical; font-family: inherit;"></textarea>
+          <div class="action-buttons">
+            <button class="action-btn primary" id="saveUserPromptPrefixButton">Save Prefix</button>
+            <button class="action-btn secondary" id="resetUserPromptPrefixButton">Reset Default</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
