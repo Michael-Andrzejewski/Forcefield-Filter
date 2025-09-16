@@ -1,19 +1,3 @@
-// UI Mode Elements
-const developerModeToggle = document.getElementById('developerModeToggle');
-const simpleMode = document.getElementById('simpleMode');
-const developerMode = document.getElementById('developerMode');
-
-// Simple Mode Elements
-const mainScanningButton = document.getElementById('mainScanningButton');
-const scanningButtonText = document.getElementById('scanningButtonText');
-const scanningStatus = document.getElementById('scanningStatus');
-
-// Developer Mode Elements
-const devScanningButton = document.getElementById('devScanningButton');
-const devScanningButtonText = document.getElementById('devScanningButtonText');
-const devScanningStatus = document.getElementById('devScanningStatus');
-
-// Common Elements (exist in both modes)
 const wordInput = document.getElementById('wordInput');
 const addButton = document.getElementById('addButton');
 const blockListDiv = document.getElementById('blockList');
@@ -28,17 +12,16 @@ const userPromptPrefixText = document.getElementById('userPromptPrefixText');
 const saveUserPromptPrefixButton = document.getElementById('saveUserPromptPrefixButton');
 const resetUserPromptPrefixButton = document.getElementById('resetUserPromptPrefixButton');
 const aiModelSelect = document.getElementById('aiModelSelect');
-const devAiModelSelect = document.getElementById('devAiModelSelect');
+const startScanningButton = document.getElementById('startScanningButton');
+const stopScanningButton = document.getElementById('stopScanningButton');
+const scanningStatus = document.getElementById('scanningStatus');
 const debugModeCheckbox = document.getElementById('debugModeCheckbox');
 const whiteboxModeCheckbox = document.getElementById('whiteboxModeCheckbox');
 
-// Site Management Elements
+// --- New elements for Allowed Sites ---
 const siteInput = document.getElementById('siteInput');
 const addSiteButton = document.getElementById('addSiteButton');
 const allowedSitesListDiv = document.getElementById('allowedSitesList');
-const devSiteInput = document.getElementById('devSiteInput');
-const devAddSiteButton = document.getElementById('devAddSiteButton');
-const devAllowedSitesListDiv = document.getElementById('devAllowedSitesList');
 
 // --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
 // Kept for the manual "Suggest Blocks (AI)" feature in popup.js
@@ -83,7 +66,7 @@ const AVAILABLE_AI_MODELS = {
     'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
     'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet (Future)'
 };
-const DEFAULT_AI_MODEL = 'claude-3-5-haiku-20241022';
+const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
 
 // Get new API Key elements
 const anthropicApiKeyInput = document.getElementById('anthropicApiKey');
@@ -91,7 +74,6 @@ const saveAnthropicApiKeyButton = document.getElementById('saveAnthropicApiKey')
 
 // Load and display the blocklist and system prompt when the popup opens
 document.addEventListener('DOMContentLoaded', () => {
-    loadDeveloperMode(); // Load developer mode state first
     loadBlockList();
     loadSystemPrompt();
     loadUserPromptPrefix();
@@ -101,8 +83,6 @@ document.addEventListener('DOMContentLoaded', () => {
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
     loadWhiteboxModeState(); // Added for whitebox mode
-    setupCollapsibleSections(); // Setup collapsible sections
-    checkSimpleModeAutoAction(); // Check if popup was opened via icon click in simple mode
 });
 
 // Add word to blocklist
@@ -113,27 +93,13 @@ wordInput.addEventListener('keypress', (e) => {
   }
 });
 
-// Add listener for Developer Mode toggle
-developerModeToggle.addEventListener('click', toggleDeveloperMode);
-
-// Add listeners for new Allowed Sites functionality (both simple and dev mode)
-addSiteButton.addEventListener('click', () => addSite(false));
+// Add listeners for new Allowed Sites functionality
+addSiteButton.addEventListener('click', addSite);
 siteInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
-        addSite(false);
+        addSite();
     }
 });
-
-devAddSiteButton.addEventListener('click', () => addSite(true));
-devSiteInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-        addSite(true);
-    }
-});
-
-// Add listeners for scanning buttons
-mainScanningButton.addEventListener('click', toggleScanning);
-devScanningButton.addEventListener('click', toggleScanning);
 
 // Trigger content script
 blockButton.addEventListener('click', () => {
@@ -165,9 +131,8 @@ resetSystemPromptButton.addEventListener('click', resetSystemPrompt);
 saveUserPromptPrefixButton.addEventListener('click', saveUserPromptPrefix);
 resetUserPromptPrefixButton.addEventListener('click', resetUserPromptPrefix);
 
-// Add listener for AI Model selection change (both simple and dev mode)
+// Add listener for AI Model selection change
 aiModelSelect.addEventListener('change', saveAiModelSelection);
-devAiModelSelect.addEventListener('change', saveAiModelSelection);
 
 // Add listeners for API Key buttons
 saveAnthropicApiKeyButton.addEventListener('click', () => saveApiKey('anthropicApiKey', anthropicApiKeyInput.value));
@@ -178,7 +143,9 @@ debugModeCheckbox.addEventListener('change', handleDebugModeChange);
 // Add listener for Whitebox Mode checkbox
 whiteboxModeCheckbox.addEventListener('change', handleWhiteboxModeChange);
 
-// Note: Scanning button listeners are now handled by toggleScanning function
+// Add listeners for Scanning buttons
+startScanningButton.addEventListener('click', startContinuousScanning);
+stopScanningButton.addEventListener('click', stopContinuousScanning);
 
 // Listen for messages from content scripts or background script
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
@@ -211,31 +178,54 @@ function loadAllowedSites() {
 }
 
 function displayAllowedSites(sites) {
-    // Update both simple mode and developer mode lists
-    [allowedSitesListDiv, devAllowedSitesListDiv].forEach(listDiv => {
-        if (listDiv) {
-            listDiv.innerHTML = '';
-            sites.forEach((site, index) => {
-                const tag = document.createElement('span');
-                tag.className = listDiv === allowedSitesListDiv ? 'site-tag' : 'site-tag';
+    allowedSitesListDiv.innerHTML = '';
+    sites.forEach((site, index) => {
+        const tag = document.createElement('span');
+        tag.className = 'tag';
 
-                const text = document.createElement('span');
-                text.textContent = site;
-                tag.appendChild(text);
+        const text = document.createElement('span');
+        text.textContent = site;
+        tag.appendChild(text);
 
-                const removeButton = document.createElement('button');
-                removeButton.textContent = '×';
-                removeButton.className = 'site-remove';
-                removeButton.title = 'Remove Site';
-                removeButton.addEventListener('click', () => removeSite(index));
-                tag.appendChild(removeButton);
+        const removeButton = document.createElement('button');
+        removeButton.textContent = 'x';
+        removeButton.title = 'Remove Site';
+        removeButton.addEventListener('click', () => removeSite(index));
+        tag.appendChild(removeButton);
 
-                listDiv.appendChild(tag);
-            });
-        }
+        allowedSitesListDiv.appendChild(tag);
     });
 }
 
+function addSite() {
+    const newSite = siteInput.value.trim().toLowerCase();
+    if (newSite) {
+        // A simple validation to remove "http://", "https://", "www." prefixes
+        const formattedSite = newSite.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
+
+        if (!formattedSite) {
+            siteInput.value = '';
+            return;
+        }
+
+        chrome.storage.sync.get(['allowedSites'], (result) => {
+            let sites = result.allowedSites || [];
+            if (!sites.includes(formattedSite)) {
+                sites.push(formattedSite);
+                chrome.storage.sync.set({ allowedSites: sites }, () => {
+                    console.log(`[Forcefield] Added "${formattedSite}" to allowed sites.`);
+                    displayAllowedSites(sites);
+                    siteInput.value = '';
+                    // After adding a site, we should re-evaluate the scanning state
+                    loadScanningState();
+                });
+            } else {
+                console.log(`[Forcefield] Site "${formattedSite}" is already in the allowed list.`);
+                siteInput.value = '';
+            }
+        });
+    }
+}
 
 function removeSite(indexToRemove) {
     chrome.storage.sync.get(['allowedSites'], (result) => {
@@ -253,37 +243,10 @@ function removeSite(indexToRemove) {
 // --- End new functions for Allowed Sites ---
 
 function updateScanningStatus(statusText) {
-    // Update both simple and developer mode status elements
     if (scanningStatus) {
         scanningStatus.textContent = statusText;
     }
-    if (devScanningStatus) {
-        devScanningStatus.textContent = statusText;
-    }
     // console.log('[Forcefield Popup] Scanning status update:', statusText);
-}
-
-function updateScanningButtons(isActive, isDisabled = false) {
-    // Update both simple and developer mode scanning buttons
-    const buttons = [
-        { button: mainScanningButton, text: scanningButtonText },
-        { button: devScanningButton, text: devScanningButtonText }
-    ];
-    
-    buttons.forEach(({ button, text }) => {
-        if (button && text) {
-            if (isActive) {
-                button.classList.remove('inactive');
-                button.classList.add('active');
-                text.textContent = 'Stop Scanning';
-            } else {
-                button.classList.remove('active');
-                button.classList.add('inactive');
-                text.textContent = 'Start Scanning';
-            }
-            button.disabled = isDisabled;
-        }
-    });
 }
 
 async function loadScanningState() {
@@ -296,15 +259,19 @@ async function loadScanningState() {
         const isAllowedSite = await checkIsOnAllowedSite(currentTab);
 
         if (!isAllowedSite) {
-            updateScanningButtons(false, true); // Set inactive and disabled
+            startScanningButton.style.display = 'inline-block';
+            stopScanningButton.style.display = 'none';
+            startScanningButton.disabled = true; // Disable the button
             updateScanningStatus('Site not on allowed list.');
             return; // Stop further processing
         }
         
         // Site is allowed, proceed with normal logic
-        updateScanningButtons(false, false); // Set inactive but enabled
+        startScanningButton.disabled = false; // Re-enable if it was disabled
 
         if (isScanningGlobally) {
+            startScanningButton.style.display = 'none';
+            stopScanningButton.style.display = 'inline-block';
             updateScanningStatus('Checking scanning state...');
 
             chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -355,7 +322,8 @@ async function loadScanningState() {
                 });
             });
         } else {
-            updateScanningButtons(false, false); // Set inactive but enabled
+            startScanningButton.style.display = 'inline-block';
+            stopScanningButton.style.display = 'none';
             updateScanningStatus('Scanning inactive.');
         }
     });
@@ -417,7 +385,8 @@ async function pingContentScriptObserverState() {
 
 function startContinuousScanning() {
     chrome.storage.local.set({ isScanning: true }, () => {
-        updateScanningButtons(true, false);
+        startScanningButton.style.display = 'none';
+        stopScanningButton.style.display = 'inline-block';
         updateScanningStatus('Starting scan...');
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (tabs[0] && tabs[0].id) {
@@ -502,7 +471,8 @@ async function startContinuousScanningLogic(tabId) {
 
 function stopContinuousScanning() {
     chrome.storage.local.set({ isScanning: false }, () => {
-        updateScanningButtons(false, false);
+        startScanningButton.style.display = 'inline-block';
+        stopScanningButton.style.display = 'none';
         updateScanningStatus('Stopping scan...');
 
         // First, get the active scan tab from background
@@ -569,14 +539,12 @@ function displayBlockList(list) {
     tag.className = 'tag';
 
     const text = document.createElement('span');
-    text.className = 'tag-text';
     text.textContent = item.text; // Use item.text
     tag.appendChild(text);
 
     // Create number input for level
     const levelInput = document.createElement('input');
     levelInput.type = 'number';
-    levelInput.className = 'tag-level';
     levelInput.value = item.level; // Use item.level
     levelInput.min = 0;
     levelInput.max = 100;
@@ -594,16 +562,15 @@ function displayBlockList(list) {
     // Add a "Refine AI" button if the item was added by AI
     if (item.source && (item.source === 'ai_manual' || item.source === 'ai_continuous')) {
         const refineButton = document.createElement('button');
-        refineButton.textContent = 'AI'; // Changed to 'AI' for better visibility
-        refineButton.className = 'tag-remove'; // Use same styling as remove
+        refineButton.textContent = 'X'; // Simple X for the button text
+        refineButton.className = 'refine-ai-button'; // New class for styling
         refineButton.title = 'Refine AI: Mark as incorrect and remove';
         refineButton.addEventListener('click', () => refineAndRemove(index, item.text));
         tag.appendChild(refineButton);
     }
 
     const removeButton = document.createElement('button');
-    removeButton.textContent = '×';
-    removeButton.className = 'tag-remove';
+    removeButton.textContent = 'x';
     removeButton.title = 'Remove'; // Add tooltip
     removeButton.addEventListener('click', () => removeWord(index));
     tag.appendChild(removeButton);
@@ -1279,46 +1246,33 @@ function resetUserPromptPrefix(showAlert = true) {
 }
 
 function loadAiModelSelection() {
-    // Populate both dropdowns
-    [aiModelSelect, devAiModelSelect].forEach(select => {
-        if (select) {
-            select.innerHTML = ''; // Clear existing options
-            for (const modelId in AVAILABLE_AI_MODELS) {
-                const option = document.createElement('option');
-                option.value = modelId;
-                option.textContent = AVAILABLE_AI_MODELS[modelId];
-                select.appendChild(option);
-            }
-        }
-    });
+    // Populate the dropdown
+    aiModelSelect.innerHTML = ''; // Clear existing options
+    for (const modelId in AVAILABLE_AI_MODELS) {
+        const option = document.createElement('option');
+        option.value = modelId;
+        option.textContent = AVAILABLE_AI_MODELS[modelId];
+        aiModelSelect.appendChild(option);
+    }
 
     // Load saved selection or use default
     chrome.storage.sync.get(['selectedAiModel'], (result) => {
         const selectedModel = result.selectedAiModel || DEFAULT_AI_MODEL;
-        [aiModelSelect, devAiModelSelect].forEach(select => {
-            if (select) {
-                if (AVAILABLE_AI_MODELS[selectedModel]) {
-                    select.value = selectedModel;
-                } else {
-                    select.value = DEFAULT_AI_MODEL; // Fallback if saved model is invalid
-                    console.warn(`[Forcefield AI] Saved model ${selectedModel} not found in available models. Using default.`);
-                }
-            }
-        });
+        if (AVAILABLE_AI_MODELS[selectedModel]) {
+            aiModelSelect.value = selectedModel;
+        } else {
+            aiModelSelect.value = DEFAULT_AI_MODEL; // Fallback if saved model is invalid
+            console.warn(`[Forcefield AI] Saved model ${selectedModel} not found in available models. Using default.`);
+        }
     });
 }
 
-function saveAiModelSelection(event) {
-    const selectedModel = event.target.value;
+function saveAiModelSelection() {
+    const selectedModel = aiModelSelect.value;
     if (AVAILABLE_AI_MODELS[selectedModel]) {
         chrome.storage.sync.set({ selectedAiModel: selectedModel }, () => {
             console.log(`[Forcefield AI] AI Model selection saved: ${selectedModel}`);
-            // Sync both dropdowns
-            [aiModelSelect, devAiModelSelect].forEach(select => {
-                if (select && select !== event.target) {
-                    select.value = selectedModel;
-                }
-            });
+            // Optional: alert('AI Model selection saved!'); 
         });
     } else {
         console.error(`[Forcefield AI] Attempted to save invalid model: ${selectedModel}`);
@@ -1397,125 +1351,3 @@ function startElementSelection() {
 }
 
 // Initial load is handled by DOMContentLoaded
-
-// Developer Mode Management
-function loadDeveloperMode() {
-    chrome.storage.local.get(['developerMode'], (result) => {
-        const isDeveloperMode = result.developerMode || false;
-        setDeveloperMode(isDeveloperMode);
-    });
-}
-
-function toggleDeveloperMode() {
-    chrome.storage.local.get(['developerMode'], (result) => {
-        const currentMode = result.developerMode || false;
-        const newMode = !currentMode;
-        chrome.storage.local.set({ developerMode: newMode }, () => {
-            setDeveloperMode(newMode);
-        });
-    });
-}
-
-function setDeveloperMode(isDeveloperMode) {
-    if (isDeveloperMode) {
-        simpleMode.classList.add('hidden');
-        developerMode.classList.remove('hidden');
-        developerModeToggle.classList.add('active');
-    } else {
-        simpleMode.classList.remove('hidden');
-        developerMode.classList.add('hidden');
-        developerModeToggle.classList.remove('active');
-    }
-}
-
-// Collapsible Sections Management
-function setupCollapsibleSections() {
-    const devSections = document.querySelectorAll('.dev-section');
-    devSections.forEach(section => {
-        const header = section.querySelector('.dev-section-header');
-        if (header) {
-            header.addEventListener('click', () => {
-                section.classList.toggle('collapsed');
-            });
-        }
-    });
-}
-
-// Unified Scanning Toggle
-function toggleScanning() {
-    chrome.storage.local.get(['isScanning'], (result) => {
-        const isCurrentlyScanning = result.isScanning || false;
-        if (isCurrentlyScanning) {
-            stopContinuousScanning();
-        } else {
-            startContinuousScanning();
-        }
-    });
-}
-
-// Check if popup should auto-toggle scanning in simple mode
-function checkSimpleModeAutoAction() {
-    chrome.storage.local.get(['developerMode'], async (result) => {
-        const isDeveloperMode = result.developerMode || false;
-        
-        if (!isDeveloperMode) {
-            // In simple mode, automatically toggle scanning when icon is clicked
-            // Check if current site is allowed first
-            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-            const currentTab = tabs[0];
-            const isAllowedSite = await checkIsOnAllowedSite(currentTab);
-            
-            if (isAllowedSite) {
-                // Auto-toggle scanning
-                toggleScanning();
-                
-                // Show a brief notification
-                const isScanning = await new Promise(resolve => {
-                    chrome.storage.local.get(['isScanning'], (data) => {
-                        resolve(data.isScanning || false);
-                    });
-                });
-                
-                // Close popup after action
-                setTimeout(() => {
-                    window.close();
-                }, 1500); // Give time to see the status change
-            } else {
-                // Site not allowed, keep popup open so user can add the site
-                console.log('[Forcefield Popup] Site not in allowed list, keeping popup open');
-            }
-        }
-    });
-}
-
-// Update Site Management to Work with Both Modes
-function addSite(isDeveloperMode = false) {
-    const input = isDeveloperMode ? devSiteInput : siteInput;
-    const newSite = input.value.trim().toLowerCase();
-    if (newSite) {
-        // A simple validation to remove "http://", "https://", "www." prefixes
-        const formattedSite = newSite.replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0];
-
-        if (!formattedSite) {
-            input.value = '';
-            return;
-        }
-
-        chrome.storage.sync.get(['allowedSites'], (result) => {
-            let sites = result.allowedSites || [];
-            if (!sites.includes(formattedSite)) {
-                sites.push(formattedSite);
-                chrome.storage.sync.set({ allowedSites: sites }, () => {
-                    console.log(`[Forcefield] Added "${formattedSite}" to allowed sites.`);
-                    displayAllowedSites(sites);
-                    input.value = '';
-                    // After adding a site, we should re-evaluate the scanning state
-                    loadScanningState();
-                });
-            } else {
-                console.log(`[Forcefield] Site "${formattedSite}" is already in the allowed list.`);
-                input.value = '';
-            }
-        });
-    }
-}

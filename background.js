@@ -42,15 +42,12 @@ let lastKnownTabUrl = {}; // Store last known URL for each tab
 chrome.runtime.onInstalled.addListener(() => {
     console.log('[Forcefield BG] Extension installed.');
     // Set initial values on installation
-    chrome.storage.local.get(['isScanning', 'activeScanTabId', 'developerMode'], (result) => {
+    chrome.storage.local.get(['isScanning', 'activeScanTabId'], (result) => {
         if (typeof result.isScanning === 'undefined') {
             chrome.storage.local.set({ isScanning: false });
         }
         if (typeof result.activeScanTabId === 'undefined') {
             chrome.storage.local.set({ activeScanTabId: null });
-        }
-        if (typeof result.developerMode === 'undefined') {
-            chrome.storage.local.set({ developerMode: false });
         }
     });
     // Set default allowed sites on first install
