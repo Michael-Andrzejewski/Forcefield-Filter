@@ -102,6 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDebugModeState(); // Added
     loadWhiteboxModeState(); // Added for whitebox mode
     setupCollapsibleSections(); // Setup collapsible sections
+    checkSimpleModeAutoAction(); // Check if popup was opened via icon click in simple mode
 });
 
 // Add word to blocklist
@@ -1452,6 +1453,40 @@ function toggleScanning() {
     });
 }
 
+// Check if popup should auto-toggle scanning in simple mode
+function checkSimpleModeAutoAction() {
+    chrome.storage.local.get(['developerMode'], async (result) => {
+        const isDeveloperMode = result.developerMode || false;
+        
+        if (!isDeveloperMode) {
+            // In simple mode, automatically toggle scanning when icon is clicked
+            // Check if current site is allowed first
+            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+            const currentTab = tabs[0];
+            const isAllowedSite = await checkIsOnAllowedSite(currentTab);
+            
+            if (isAllowedSite) {
+                // Auto-toggle scanning
+                toggleScanning();
+                
+                // Show a brief notification
+                const isScanning = await new Promise(resolve => {
+                    chrome.storage.local.get(['isScanning'], (data) => {
+                        resolve(data.isScanning || false);
+                    });
+                });
+                
+                // Close popup after action
+                setTimeout(() => {
+                    window.close();
+                }, 1500); // Give time to see the status change
+            } else {
+                // Site not allowed, keep popup open so user can add the site
+                console.log('[Forcefield Popup] Site not in allowed list, keeping popup open');
+            }
+        }
+    });
+}
 
 // Update Site Management to Work with Both Modes
 function addSite(isDeveloperMode = false) {
