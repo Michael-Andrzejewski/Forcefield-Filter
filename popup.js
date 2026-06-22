@@ -98,6 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadDebugModeState(); // Added
     loadWhiteboxModeState(); // Added for whitebox mode
     setupCollapsibleSections(); // Setup collapsible sections
+    renderTwitterActivity(); // Twitter like/mute/block/not-interested log
 });
 
 // Add word to blocklist
@@ -169,6 +170,71 @@ saveAnthropicApiKeyButton.addEventListener('click', () => saveApiKey('anthropicA
 if (saveGeminiApiKeyButton) {
     saveGeminiApiKeyButton.addEventListener('click', () => saveApiKey('geminiApiKey', geminiApiKeyInput.value));
 }
+
+// --- Twitter Activity Log ---
+const copyTwitterLogButton = document.getElementById('copyTwitterLogButton');
+const clearTwitterLogButton = document.getElementById('clearTwitterLogButton');
+const EMPTY_TWITTER_ACTIVITY = { liked: [], notInterested: [], muted: [], blocked: [] };
+
+function formatTwitterActivity(store) {
+    const cats = [
+        ['liked', 'LIKED'],
+        ['notInterested', 'NOT INTERESTED'],
+        ['muted', 'MUTED'],
+        ['blocked', 'BLOCKED']
+    ];
+    const out = [];
+    cats.forEach(([key, label]) => {
+        const list = (store && store[key]) || [];
+        out.push(`=== ${label} (${list.length}) ===`);
+        if (!list.length) {
+            out.push('(none)');
+        } else {
+            list.forEach(e => {
+                const who = e.handle || e.displayName || '(unknown)';
+                const text = (e.text || '').replace(/\s+/g, ' ').trim();
+                out.push(text ? `${who}: ${text}` : who);
+            });
+        }
+        out.push('');
+    });
+    return out.join('\n').trim();
+}
+
+function renderTwitterActivity() {
+    const pre = document.getElementById('twitterActivityLog');
+    if (!pre) return;
+    chrome.storage.local.get(['twitterActivity'], (res) => {
+        pre.textContent = formatTwitterActivity(res.twitterActivity) || '(no activity logged yet)';
+    });
+}
+
+if (copyTwitterLogButton) {
+    copyTwitterLogButton.addEventListener('click', () => {
+        const pre = document.getElementById('twitterActivityLog');
+        if (pre && navigator.clipboard) {
+            navigator.clipboard.writeText(pre.textContent).then(() => {
+                copyTwitterLogButton.textContent = 'Copied!';
+                setTimeout(() => { copyTwitterLogButton.textContent = 'Copy'; }, 1200);
+            });
+        }
+    });
+}
+
+if (clearTwitterLogButton) {
+    clearTwitterLogButton.addEventListener('click', () => {
+        if (confirm('Clear the Twitter activity log? This cannot be undone.')) {
+            chrome.storage.local.set({ twitterActivity: EMPTY_TWITTER_ACTIVITY }, renderTwitterActivity);
+        }
+    });
+}
+
+// Live-update the log while the popup is open (e.g. you like a tweet in another tab).
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.twitterActivity) {
+        renderTwitterActivity();
+    }
+});
 
 // Add listener for Debug Mode checkbox
 debugModeCheckbox.addEventListener('change', handleDebugModeChange);
