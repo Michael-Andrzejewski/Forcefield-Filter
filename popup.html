@@ -373,6 +373,40 @@
     .hidden {
       display: none !important;
     }
+
+    /* ===== Compact overrides (appended last so they win the cascade) ===== */
+    .header { padding: 7px 12px; }
+    .logo { font-size: 15px; }
+    .toggle-switch { width: 34px; height: 18px; }
+    .toggle-slider { width: 14px; height: 14px; }
+    .toggle-switch.active .toggle-slider { transform: translateX(16px); }
+    .toggle-label { font-size: 10px; margin-bottom: 2px; }
+    .content { padding: 8px 10px; }
+    .simple-mode .card { padding: 9px 11px; border-radius: 9px; margin-bottom: 7px; }
+    .scanning-status { margin-bottom: 8px; }
+    .scanning-button { padding: 8px; border-radius: 8px; font-size: 13px; box-shadow: none; }
+    .ai-model-section, .sites-section { margin-bottom: 8px; }
+    .section-title { font-size: 12px; margin-bottom: 5px; }
+    .ai-model-select { padding: 6px 9px; border-radius: 7px; font-size: 12px; }
+    .sites-list { gap: 5px; }
+    .site-tag { padding: 3px 8px; font-size: 11px; }
+    .add-site-container { gap: 6px; margin-top: 7px; }
+    .site-input { padding: 6px 8px; font-size: 11px; }
+    .add-site-btn { padding: 6px 10px; font-size: 11px; }
+    .developer-mode .dev-section { margin-bottom: 7px; border-radius: 9px; }
+    .dev-section-header { padding: 8px 11px; }
+    .dev-section-title { font-size: 12px; }
+    .dev-section-content { padding: 9px 11px; }
+    .tags-container { gap: 5px; margin-bottom: 9px; }
+    .tag { padding: 3px 7px; font-size: 11px; }
+    .tag-level { width: 30px; }
+    .add-tag-container { gap: 6px; margin-bottom: 9px; }
+    .tag-input { padding: 6px 8px; font-size: 11px; }
+    .add-tag-btn { padding: 6px 10px; font-size: 11px; }
+    .action-buttons { gap: 6px; margin-top: 9px; }
+    .action-btn { padding: 7px 9px; font-size: 11px; }
+    /* No hover lift/shadow in the tight layout — avoids jumpiness */
+    .scanning-button:hover, .action-btn:hover, .add-site-btn:hover { transform: none; box-shadow: none; }
   </style>
 </head>
 <body>
@@ -416,7 +450,7 @@
       <div class="card">
         <div class="ai-model-section">
           <div class="section-title">Twitter Activity Log</div>
-          <pre id="twitterActivityLog" style="max-height: 200px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 11px; line-height: 1.4; color: #2c3e50; background: rgba(255,255,255,0.9); border: 1px solid rgba(52,152,219,0.2); border-radius: 8px; padding: 10px; margin: 0;">Loading…</pre>
+          <pre id="twitterActivityLog" style="max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 10px; line-height: 1.3; color: #2c3e50; background: rgba(255,255,255,0.9); border: 1px solid rgba(52,152,219,0.2); border-radius: 7px; padding: 8px; margin: 0;">Loading…</pre>
           <div class="action-buttons" style="margin-top: 10px;">
             <button class="action-btn primary" id="copyTwitterLogButton">Copy</button>
             <button class="action-btn secondary" id="clearTwitterLogButton">Clear Log</button>
@@ -560,7 +594,7 @@
           <div class="collapse-icon">▼</div>
         </div>
         <div class="dev-section-content">
-          <textarea id="systemPromptText" rows="6" style="width: 100%; padding: 12px; border: 2px solid rgba(52, 152, 219, 0.2); border-radius: 8px; background: rgba(255, 255, 255, 0.9); font-size: 12px; margin-bottom: 8px; resize: vertical; font-family: inherit;"></textarea>
+          <textarea id="systemPromptText" rows="3" style="width: 100%; padding: 8px; border: 1px solid rgba(52, 152, 219, 0.2); border-radius: 7px; background: rgba(255, 255, 255, 0.9); font-size: 11px; margin-bottom: 6px; resize: vertical; font-family: inherit;"></textarea>
           <div class="action-buttons">
             <button class="action-btn primary" id="saveSystemPromptButton">Save Prompt</button>
             <button class="action-btn secondary" id="resetSystemPromptButton">Reset Default</button>
@@ -575,7 +609,7 @@
           <div class="collapse-icon">▼</div>
         </div>
         <div class="dev-section-content">
-          <textarea id="userPromptPrefixText" rows="4" style="width: 100%; padding: 12px; border: 2px solid rgba(52, 152, 219, 0.2); border-radius: 8px; background: rgba(255, 255, 255, 0.9); font-size: 12px; margin-bottom: 8px; resize: vertical; font-family: inherit;"></textarea>
+          <textarea id="userPromptPrefixText" rows="2" style="width: 100%; padding: 8px; border: 1px solid rgba(52, 152, 219, 0.2); border-radius: 7px; background: rgba(255, 255, 255, 0.9); font-size: 11px; margin-bottom: 6px; resize: vertical; font-family: inherit;"></textarea>
           <div class="action-buttons">
             <button class="action-btn primary" id="saveUserPromptPrefixButton">Save Prefix</button>
             <button class="action-btn secondary" id="resetUserPromptPrefixButton">Reset Default</button>
