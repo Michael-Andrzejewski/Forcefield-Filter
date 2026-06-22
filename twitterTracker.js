@@ -52,6 +52,7 @@
 
     function record(category, info, opts) {
         if (!info || (!info.text && !info.handle)) return; // nothing identifiable to store
+        console.log(`[Forcefield] ${category}${opts && opts.remove ? ' (remove)' : ''}:`, info.handle || info.displayName || '(unknown)', '—', (info.text || '').slice(0, 60));
         chrome.storage.local.get([STORAGE_KEY], (res) => {
             const store = Object.assign({}, EMPTY, res[STORAGE_KEY] || {});
             const list = store[category] = (store[category] || []);
