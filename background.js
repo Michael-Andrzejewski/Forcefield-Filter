@@ -1,3 +1,6 @@
+// Provider abstraction (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM)
+importScripts('llm.js');
+
 // Default AI System Prompt
 const DEFAULT_SYSTEM_PROMPT = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
 
@@ -24,15 +27,7 @@ Example Correct Output:
 const DEFAULT_USER_PROMPT_PREFIX = "Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n";
 const DEFAULT_USER_PROMPT_SUFFIX = "\n----\n\nRemember to only return the tagged statements, nothing else.";
 
-// AI Model Configuration
-const AVAILABLE_AI_MODELS = {
-    'claude-3-5-sonnet-20240620': 'Claude 3.5 Sonnet (New)',
-    'claude-3-opus-20240229': 'Claude 3 Opus',
-    'claude-3-sonnet-20240229': 'Claude 3 Sonnet (Older)',
-    'claude-3-haiku-20240307': 'Claude 3 Haiku',
-    'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet (Future)'
-};
-const DEFAULT_AI_MODEL = 'claude-3-5-sonnet-20240620';
+// AI Model Configuration now lives in llm.js (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL).
 
 let currentAiCallAbortController = null;
 let activeScanTabId = null; // Keep track of which tab is being scanned
@@ -140,18 +135,22 @@ async function refineSystemPromptWithAI(incorrectlyBlockedText, tabId) {
 
     // 1. Get current settings from storage
     const storedData = await new Promise((resolve) => {
-        chrome.storage.sync.get(['customSystemPrompt', 'selectedAiModel', 'anthropicApiKey'], resolve);
+        chrome.storage.sync.get(['customSystemPrompt', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey'], resolve);
     });
 
     const systemPrompt = storedData.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
     const model = storedData.selectedAiModel || DEFAULT_AI_MODEL;
     const apiKey = storedData.anthropicApiKey;
+    const geminiApiKey = storedData.geminiApiKey;
+    const provider = providerForModel(model);
+    const keyForProvider = provider === 'google' ? geminiApiKey : apiKey;
 
-    if (!apiKey) {
-        console.error('[Forcefield BG] Refinement failed: Anthropic API Key is not set.');
+    if (!keyForProvider) {
+        const label = provider === 'google' ? 'Gemini' : 'Anthropic';
+        console.error(`[Forcefield BG] Refinement failed: ${label} API Key is not set.`);
         // Notify the user on the page that the key is missing
         if (tabId) {
-            logToPageConsole(tabId, '[Forcefield] ERROR: Cannot refine prompt. Anthropic API key is missing. Please set it in the extension settings.');
+            logToPageConsole(tabId, `[Forcefield] ERROR: Cannot refine prompt. ${label} API key is missing. Please set it in the extension settings.`);
         }
         return;
     }
@@ -173,41 +172,21 @@ ONLY return the complete, new, refined system prompt. Do not include any other t
 The output should be ready to be used directly as the new system prompt.`;
 
 
-    const requestBody = {
-        model: model,
-        max_tokens: 4096,
-        temperature: 0.5, // Use a moderate temperature for creative but controlled rewriting
-        messages: [{
-            role: "user",
-            content: refinementPrompt
-        }]
-    };
-
     console.log('[Forcefield BG] Sending refinement request to AI...');
 
     try {
-        // 3. Make the API call
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'x-api-key': apiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody)
+        // 3. Make the API call via the provider abstraction
+        const refinedText = await callLLM({
+            model: model,
+            userText: refinementPrompt,
+            maxTokens: 4096,
+            anthropicApiKey: apiKey,
+            geminiApiKey: geminiApiKey
         });
+        console.log('[Forcefield BG] Received AI response for refinement.');
 
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
-        }
-
-        const result = await response.json();
-        console.log('[Forcefield BG] Received AI response for refinement:', result);
-
-        if (result.content && result.content[0] && result.content[0].type === 'text') {
-            const newSystemPrompt = result.content[0].text.trim();
+        if (refinedText && refinedText.trim()) {
+            const newSystemPrompt = refinedText.trim();
 
             // 4. Save the new prompt to storage
             await chrome.storage.sync.set({ customSystemPrompt: newSystemPrompt });
@@ -477,16 +456,22 @@ async function refinePromptsWithAI(selectedText, tabId) {
     logToPageConsole(tabId, '[Forcefield AI] Starting prompt refinement based on selected text.');
 
     try {
-        const [storageSystemPrompt, storageUserPrompt, storedApiKeys] = await Promise.all([
+        const [storageSystemPrompt, storageUserPrompt, storedApiKeys, storedModel] = await Promise.all([
             chrome.storage.sync.get(['customSystemPrompt']),
             chrome.storage.sync.get(['customUserPromptPrefix']),
-            chrome.storage.sync.get(['anthropicApiKey'])
+            chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey']),
+            chrome.storage.sync.get(['selectedAiModel'])
         ]);
 
         const anthropicApiKey = storedApiKeys.anthropicApiKey;
-        if (!anthropicApiKey) {
-            console.error(`${logPrefix} Anthropic API Key not found.`);
-            logToPageConsole(tabId, `[Forcefield AI] Error: Anthropic API Key not set. Cannot refine prompts.`);
+        const geminiApiKey = storedApiKeys.geminiApiKey;
+        const model = storedModel.selectedAiModel || DEFAULT_AI_MODEL;
+        const provider = providerForModel(model);
+        const keyForProvider = provider === 'google' ? geminiApiKey : anthropicApiKey;
+        if (!keyForProvider) {
+            const label = provider === 'google' ? 'Gemini' : 'Anthropic';
+            console.error(`${logPrefix} ${label} API Key not found.`);
+            logToPageConsole(tabId, `[Forcefield AI] Error: ${label} API Key not set. Cannot refine prompts.`);
             return;
         }
 
@@ -497,41 +482,19 @@ async function refinePromptsWithAI(selectedText, tabId) {
 
         const metaUserPrompt = `Current System Prompt:\n---\n${currentSystemPrompt}\n---\n\nCurrent User Prefix:\n---\n${currentUserPromptPrefix}\n---\n\nExample text to block:\n---\n${selectedText}\n---`;
 
-        const requestBody = {
-            model: 'claude-3-5-sonnet-20240620',
-            max_tokens: 4096,
-            temperature: 0.5,
-            system: metaSystemPrompt,
-            messages: [{ role: "user", content: metaUserPrompt }]
-        };
-        
         console.log(`${logPrefix} Sending prompt refinement request to AI.`);
         logToPageConsole(tabId, '[Forcefield AI] Sending request to refine prompts...');
 
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'x-api-key': anthropicApiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody)
+        const aiResponseContent = await callLLM({
+            model: model,
+            system: metaSystemPrompt,
+            userText: metaUserPrompt,
+            maxTokens: 4096,
+            anthropicApiKey: anthropicApiKey,
+            geminiApiKey: geminiApiKey
         });
-
-        if (!response.ok) {
-            const errorBodyText = await response.text();
-            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBodyText}`);
-        }
-
-        const result = await response.json();
-        console.log(`${logPrefix} AI Refinement Response:`, result);
-        logToPageConsole(tabId, `[Forcefield AI] Received refinement response:`, result);
-
-        let aiResponseContent = '';
-        if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
-            aiResponseContent = result.content[0].text;
-        }
+        console.log(`${logPrefix} AI Refinement Response received.`);
+        logToPageConsole(tabId, `[Forcefield AI] Received refinement response.`);
 
         const systemPromptRegex = /<system_prompt>([\s\S]*?)<\/system_prompt>/;
         const userPrefixRegex = /<user_prefix>([\s\S]*?)<\/user_prefix>/;
@@ -822,47 +785,35 @@ async function handleNewContent(text, tabId) {
     console.log(`${logPrefix} Received new content. Length: ${text.length}`);
     
     try {
-        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey']);
+        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey']);
         const localData = await chrome.storage.local.get(['whiteboxMode', 'debugMode']);
         const allConfig = { ...syncData, ...localData };
-
-        if (!allConfig.anthropicApiKey) {
-            console.warn(`${logPrefix} Anthropic API Key is not set. Cannot perform analysis.`);
-            return;
-        }
 
         const systemPrompt = allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
         const userPromptPrefix = allConfig.customUserPromptPrefix !== undefined ? allConfig.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
         const aiModel = allConfig.selectedAiModel || DEFAULT_AI_MODEL;
-        const userPrompt = `${userPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
+        const provider = providerForModel(aiModel);
+        const keyForProvider = provider === 'google' ? allConfig.geminiApiKey : allConfig.anthropicApiKey;
 
-        const requestBody = {
-            model: aiModel,
-            max_tokens: 4096,
-            temperature: 0.5,
-            system: systemPrompt,
-            messages: [{ role: "user", content: userPrompt }]
-        };
-
-        console.log(`${logPrefix} Sending request to AI...`);
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
-            method: 'POST',
-            headers: {
-                'x-api-key': allConfig.anthropicApiKey,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json',
-                'anthropic-dangerous-direct-browser-access': 'true'
-            },
-            body: JSON.stringify(requestBody)
-        });
-
-        if (!response.ok) {
-            const errorBody = await response.text();
-            throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
+        if (!keyForProvider) {
+            console.warn(`${logPrefix} ${provider === 'google' ? 'Gemini' : 'Anthropic'} API Key is not set. Cannot perform analysis.`);
+            return;
         }
 
-        const result = await response.json();
-        const aiResponseContent = (result.content && result.content[0] && result.content[0].text) || '';
+        const userPrompt = `${userPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
+
+        console.log(`${logPrefix} Sending request to AI via ${provider} (${aiModel})...`);
+        // cacheSystem: this is the hot path — cache the stable system prefix so
+        // repeated scans in a session re-read it cheaply (once it's large enough).
+        const aiResponseContent = await callLLM({
+            model: aiModel,
+            system: systemPrompt,
+            userText: userPrompt,
+            maxTokens: 4096,
+            anthropicApiKey: allConfig.anthropicApiKey,
+            geminiApiKey: allConfig.geminiApiKey,
+            cacheSystem: true
+        });
         const suggestions = extractNegativeTags(aiResponseContent);
         
         console.log(`${logPrefix} Received ${suggestions.length} suggestions from AI.`);

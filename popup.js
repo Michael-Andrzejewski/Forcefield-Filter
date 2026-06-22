@@ -76,18 +76,14 @@ Example Correct Output:
 const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed:\n\n----\n`;
 const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now
 
-// AI Model Configuration (kept for popup.js features)
-const AVAILABLE_AI_MODELS = {
-    'claude-3-5-sonnet-20240620': 'Claude 3.5 Sonnet (New)',
-    'claude-3-opus-20240229': 'Claude 3 Opus',
-    'claude-3-5-haiku-20241022': 'Claude 3.5 Haiku',
-    'claude-3-7-sonnet-20250219': 'Claude 3.7 Sonnet (Future)'
-};
-const DEFAULT_AI_MODEL = 'claude-3-5-haiku-20241022';
+// AI Model Configuration (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL) now comes from llm.js,
+// loaded before popup.js in popup.html.
 
 // Get new API Key elements
 const anthropicApiKeyInput = document.getElementById('anthropicApiKey');
 const saveAnthropicApiKeyButton = document.getElementById('saveAnthropicApiKey');
+const geminiApiKeyInput = document.getElementById('geminiApiKey');
+const saveGeminiApiKeyButton = document.getElementById('saveGeminiApiKey');
 
 // Load and display the blocklist and system prompt when the popup opens
 document.addEventListener('DOMContentLoaded', () => {
@@ -170,6 +166,9 @@ devAiModelSelect.addEventListener('change', saveAiModelSelection);
 
 // Add listeners for API Key buttons
 saveAnthropicApiKeyButton.addEventListener('click', () => saveApiKey('anthropicApiKey', anthropicApiKeyInput.value));
+if (saveGeminiApiKeyButton) {
+    saveGeminiApiKeyButton.addEventListener('click', () => saveApiKey('geminiApiKey', geminiApiKeyInput.value));
+}
 
 // Add listener for Debug Mode checkbox
 debugModeCheckbox.addEventListener('change', handleDebugModeChange);
@@ -948,9 +947,12 @@ function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
 
 // --- New API Key Management Functions ---
 function loadApiKeys() {
-    chrome.storage.sync.get(['anthropicApiKey'], (result) => {
-        if (result.anthropicApiKey) {
+    chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey'], (result) => {
+        if (result.anthropicApiKey && anthropicApiKeyInput) {
             anthropicApiKeyInput.value = result.anthropicApiKey;
+        }
+        if (result.geminiApiKey && geminiApiKeyInput) {
+            geminiApiKeyInput.value = result.geminiApiKey;
         }
         console.log('[Forcefield Popup] API Keys loaded.');
     });
@@ -1044,70 +1046,37 @@ async function getAiSuggestions() {
                     // Log extracted text length to page console
                     await logToPageConsole(tabs[0].id, '[Forcefield AI] Extracted text length:', pageText.length);
 
-                    // Get the Anthropic API Key from storage
+                    // Get both provider API keys from storage
                     const storedKeys = await new Promise((resolve) => {
-                        chrome.storage.sync.get(['anthropicApiKey'], resolve);
+                        chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey'], resolve);
                     });
-                    const anthropicApiKey = storedKeys.anthropicApiKey;
+                    const provider = providerForModel(currentAiModel);
+                    const keyForProvider = provider === 'google' ? storedKeys.geminiApiKey : storedKeys.anthropicApiKey;
 
-                    if (!anthropicApiKey) {
-                        alert('Anthropic API Key is not set. Please set it in the settings.');
+                    if (!keyForProvider) {
+                        alert(`${provider === 'google' ? 'Gemini' : 'Anthropic'} API Key is not set. Please set it in the settings.`);
                         aiSuggestButton.textContent = 'Suggest Blocks (AI)';
                         aiSuggestButton.disabled = false;
                         return;
                     }
 
-                    // Prepare the prompt and API request
+                    // Prepare the prompt
                     const userPrompt = `${currentUserPromptPrefix}${pageText}${DEFAULT_USER_PROMPT_SUFFIX}`;
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Sending request via', provider, 'model', currentAiModel);
 
-                    const requestBody = {
-                        model: currentAiModel, 
-                        max_tokens: 4096, 
-                        temperature: 0.5, 
-                        system: currentSystemPrompt, 
-                        messages: [
-                            {
-                                role: "user",
-                                content: userPrompt
-                            }
-                        ]
-                    };
-
-                    // Log prompt details to page console
-                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Sending prompt to Claude:', { system: 'System prompt (see popup source)', user: 'User prompt with page text...' /* Avoid logging full page text */ });
-                    // Log the *actual* request body to the page console
-                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Full Request Body:', JSON.stringify(requestBody, null, 2));
-
-                    // --- API Call --- //
+                    // --- API Call (via provider abstraction in llm.js) --- //
                     // WARNING: API Key is exposed client-side. See security note above.
-                    const response = await fetch('https://api.anthropic.com/v1/messages', {
-                        method: 'POST',
-                        headers: {
-                            'x-api-key': anthropicApiKey, // Use the stored key
-                            'anthropic-version': '2023-06-01',
-                            'content-type': 'application/json',
-                            // Required header for direct browser access - ACKNOWLEDGES SECURITY RISK
-                            'anthropic-dangerous-direct-browser-access': 'true'
-                        },
-                        body: JSON.stringify(requestBody)
-                    });
-
-                    if (!response.ok) {
-                        const errorBody = await response.text();
-                        throw new Error(`API request failed: ${response.status} ${response.statusText} - ${errorBody}`);
-                    }
-
-                    const result = await response.json();
-                    // Log received response to page console
-                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Received response from Claude:', result);
-                    // Log full raw response to extension console (new)
-                    console.log('[Forcefield AI] Full raw response from Claude:', result);
-
-                    // Extract content from the response
                     let aiResponseContent = '';
-                    if (result.content && result.content.length > 0 && result.content[0].type === 'text') {
-                        aiResponseContent = result.content[0].text;
-                    }
+                    aiResponseContent = await callLLM({
+                        model: currentAiModel,
+                        system: currentSystemPrompt,
+                        userText: userPrompt,
+                        maxTokens: 4096,
+                        anthropicApiKey: storedKeys.anthropicApiKey,
+                        geminiApiKey: storedKeys.geminiApiKey,
+                        cacheSystem: true
+                    });
+                    await logToPageConsole(tabs[0].id, '[Forcefield AI] Received response.');
 
                     // Parse the response to find <Negative> tags
                     const suggestions = extractNegativeTags(aiResponseContent);
