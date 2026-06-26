@@ -365,8 +365,11 @@ async function loadScanningState() {
             return; // Stop further processing
         }
         
-        // Site is allowed, proceed with normal logic
-        updateScanningButtons(false, false); // Set inactive but enabled
+        // Site is allowed, proceed with normal logic.
+        // Reflect the GLOBAL scanning state on the toggle immediately, so the
+        // button shows green "Stop Scanning" when a scan is already running
+        // (instead of staying gray "Start Scanning" while the status says active).
+        updateScanningButtons(isScanningGlobally, false);
 
         if (isScanningGlobally) {
             updateScanningStatus('Checking scanning state...');
