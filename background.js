@@ -228,6 +228,18 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'");
     }
 
+    // Strip whitespace + smart punctuation so fragmented / smart-quoted tweet text
+    // still matches the AI's flagged phrase. Builds on normalizeApostrophes (above).
+    function normalizeText(str) {
+        if (!str) return '';
+        return normalizeApostrophes(str)
+            .replace(/[“”„«»]/g, '"') // curly/guillemet quotes -> "
+            .replace(/[–—―−]/g, '-')       // en/em/figure dash, minus -> -
+            .replace(/…/g, '...')                          // ellipsis -> ...
+            .replace(/\s+/g, '')                                // drop all whitespace
+            .toLowerCase();
+    }
+
     const hiddenMarker = 'hiddenByForcefield';
     const debugHighlightClass = 'forcefield-debug-highlight';
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
@@ -277,6 +289,13 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     const allElements = document.body.getElementsByTagName('*');
     let elementsAffected = 0;
 
+    // Pre-normalize block phrases once (avoids re-normalizing per element).
+    const normalizedBlockItems = [];
+    for (const item of blockListToUse) {
+        const nb = normalizeText(item.text);
+        if (nb) normalizedBlockItems.push({ item: item, text: nb });
+    }
+
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
         // Skip logic considering whitebox mode
@@ -287,19 +306,26 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         let foundMatch = null;
         let matchedBlockItem = null;
 
-        for (const childNode of element.childNodes) {
-            if (childNode.nodeType === 3 && childNode.nodeValue && childNode.nodeValue.trim()) {
-                const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
-                for (const item of blockListToUse) {
-                    const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
-                    if (normalizedNodeText.includes(normalizedBlockText)) {
+        // Match against the element's FULL text so a phrase split across several
+        // child <span>s (how Twitter renders tweet text) is still found. Pick the
+        // DEEPEST element that contains it, so we anchor on the tightest node
+        // rather than a page-level container. Skip very large elements for speed.
+        const elementText = element.textContent;
+        if (elementText && elementText.length <= 1000) {
+            const normalizedElementText = normalizeText(elementText);
+            for (const entry of normalizedBlockItems) {
+                if (normalizedElementText.includes(entry.text)) {
+                    let deeperChildMatches = false;
+                    for (const child of element.children) {
+                        if (normalizeText(child.textContent).includes(entry.text)) { deeperChildMatches = true; break; }
+                    }
+                    if (!deeperChildMatches) {
                         foundMatch = element;
-                        matchedBlockItem = item;
+                        matchedBlockItem = entry.item;
                         break;
                     }
                 }
             }
-            if (foundMatch) break;
         }
 
         if (foundMatch && matchedBlockItem) {
