@@ -803,6 +803,9 @@ async function handleNewContent(text, tabId) {
         const userPrompt = `${userPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
 
         console.log(`${logPrefix} Sending request to AI via ${provider} (${aiModel})...`);
+        // Surface the scan in the *page* console too, so behaviour is visible
+        // without opening the service-worker console.
+        logToPageConsole(tabId, `[Forcefield AI] Scanning ${text.length} chars via ${provider} (${aiModel})…`);
         // cacheSystem: this is the hot path — cache the stable system prefix so
         // repeated scans in a session re-read it cheaply (once it's large enough).
         const aiResponseContent = await callLLM({
@@ -815,8 +818,9 @@ async function handleNewContent(text, tabId) {
             cacheSystem: true
         });
         const suggestions = extractNegativeTags(aiResponseContent);
-        
+
         console.log(`${logPrefix} Received ${suggestions.length} suggestions from AI.`);
+        logToPageConsole(tabId, `[Forcefield AI] Flagged ${suggestions.length} statement(s).`, suggestions);
 
         if (suggestions.length > 0) {
             await addSuggestionsToBlocklist(suggestions, tabId, allConfig.whiteboxMode, allConfig.debugMode);
@@ -824,6 +828,7 @@ async function handleNewContent(text, tabId) {
 
     } catch (error) {
         console.error(`${logPrefix} Error during AI analysis:`, error);
+        logToPageConsole(tabId, `[Forcefield AI] ERROR during analysis: ${error.message}`);
     }
 }
 
