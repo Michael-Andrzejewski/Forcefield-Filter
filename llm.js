@@ -25,6 +25,12 @@ function providerForModel(model) {
 // Returns the model's raw text output as a string. Throws on a missing key or a
 // non-OK HTTP response (callers already wrap these in try/catch).
 async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false }) {
+    // Guard against a stale/retired model id lingering in storage (e.g. an old
+    // claude-3-* selection from before the model list was modernized).
+    if (!AVAILABLE_AI_MODELS[model]) {
+        console.warn(`[Forcefield] Unknown/stale model "${model}" — falling back to ${DEFAULT_AI_MODEL}.`);
+        model = DEFAULT_AI_MODEL;
+    }
     const provider = providerForModel(model);
     if (provider === 'google') {
         if (!geminiApiKey) throw new Error('Gemini API key is not set.');

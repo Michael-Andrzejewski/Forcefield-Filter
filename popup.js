@@ -1328,16 +1328,14 @@ function loadAiModelSelection() {
 
     // Load saved selection or use default
     chrome.storage.sync.get(['selectedAiModel'], (result) => {
-        const selectedModel = result.selectedAiModel || DEFAULT_AI_MODEL;
+        let selectedModel = result.selectedAiModel || DEFAULT_AI_MODEL;
+        if (!AVAILABLE_AI_MODELS[selectedModel]) {
+            console.warn(`[Forcefield AI] Saved model ${selectedModel} is unavailable. Resetting to ${DEFAULT_AI_MODEL}.`);
+            selectedModel = DEFAULT_AI_MODEL;
+            chrome.storage.sync.set({ selectedAiModel: DEFAULT_AI_MODEL }); // clean stale value
+        }
         [aiModelSelect, devAiModelSelect].forEach(select => {
-            if (select) {
-                if (AVAILABLE_AI_MODELS[selectedModel]) {
-                    select.value = selectedModel;
-                } else {
-                    select.value = DEFAULT_AI_MODEL; // Fallback if saved model is invalid
-                    console.warn(`[Forcefield AI] Saved model ${selectedModel} not found in available models. Using default.`);
-                }
-            }
+            if (select) select.value = selectedModel;
         });
     });
 }
