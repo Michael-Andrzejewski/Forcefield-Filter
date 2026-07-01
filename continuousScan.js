@@ -6,7 +6,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     let debounceTimer = null;
     let newTextBuffer = []; // Collects text from mutations
     let isObserving = false; // This will be controlled by messages
-    const DEBOUNCE_DELAY = 100; // 1 second
+    const DEBOUNCE_DELAY = 1000; // 1 second — batches mutations so a fast scroll is one AI call, not ten
     const MIN_NODE_TEXT_LENGTH = 5; // Minimum length for a single node's text to be considered
     const MIN_COMBINED_TEXT_LENGTH = 50; // Minimum length for the combined text to be sent to AI
     const MIN_ALPHA_RATIO = 0.7; // Minimum ratio of alphabetic characters in the text
@@ -188,6 +188,15 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         if (significantChangeDetected) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
+                // Re-apply the existing blocklist to whatever just rendered. This is
+                // cheap and local (no AI call) and is what keeps already-flagged posts
+                // hidden/highlighted as X's virtualized timeline mounts and unmounts
+                // them during scrolling.
+                if (canSendMessage()) {
+                    chrome.runtime.sendMessage({ command: "runBlocker" }, () => {
+                        void chrome.runtime.lastError; // ignore; background may be waking up
+                    });
+                }
                 if (newTextBuffer.length > 0) {
                     const combinedText = newTextBuffer.join('\n\n').trim();
                     newTextBuffer = []; 

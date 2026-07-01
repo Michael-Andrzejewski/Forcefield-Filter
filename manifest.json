@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Forcefield",
-  "version": "1.8",
+  "version": "1.9",
   "description": "Blocks internet toxicity using AI.",
   "permissions": ["activeTab", "scripting", "storage", "notifications"],
   "host_permissions": ["https://api.anthropic.com/*", "https://generativelanguage.googleapis.com/*", "<all_urls>"],

@@ -40,41 +40,6 @@ const devSiteInput = document.getElementById('devSiteInput');
 const devAddSiteButton = document.getElementById('devAddSiteButton');
 const devAllowedSitesListDiv = document.getElementById('devAllowedSitesList');
 
-// --- VERY INSECURE - DO NOT USE IN PRODUCTION --- //
-// Kept for the manual "Suggest Blocks (AI)" feature in popup.js
-// const ANTHROPIC_API_KEY = 'REDACTED_ANTHROPIC_API_KEY'; // Will be replaced by stored key
-// --- END INSECURE SECTION --- //
-
-// Default AI System Prompt (kept for popup.js features)
-const DEFAULT_SYSTEM_PROMPT = `Your task is to identify:
--Controversial
--Politically aggressive
--Negative
--Low-effort
--Non-technical
--Non-insightful
-statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
-
-
-
-For each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.
-Do NOT add explanations, apologies, or any text outside the <Negative> tags.
-Do NOT tag entire paragraphs; the blocking tool only works on single sentences without paragraph breaks or quotation marks.
-Be selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.
-
-Example Input Text:
-To view keyboard shortcuts, press question mark\nView keyboard shortcuts\nFor you\nFollowing\nSee new posts\nWhat's happening?\n\n\nPost\nYour Home Timeline\nJoshua Skootsky\n@Joshua_Skootsky\n·\n1h\nThere is a beautiful song where the author turns to Rabbi Akiva and asks where are the heroes, where are the Maccabees?\n\nThe teacher, Rabbi Akiva, says you are the heroes, you are the Maccabees.\nQuote\nEmmett Shear\n@eshear\n·\n16h\nI have good news, and I have bad news.\nThe good news is: the cavalry is coming. We are saved. The crisis will be resolved. The problem will be solved.\nThe bad news is: if you are reading this, you're the cavalry.\n2\n1\n75\nEmmett Shear\n@eshear\n·\n38m\nIs it Rabbi Akiva by Debbie Friedman?\nopen.spotify.com\nRabbi Akiva\nDebbie Friedman · The Alef Bet · Song · 2001\n1\n30\nLisan al Gaib\n@scaling01\n·\n55m\nIntroducing LisanBench\n\nLisanBench is a simple, scalable, and precise benchmark designed to evaluate large language models on knowledge, forward-planning, constraint adherence, memory and attention, and long context reasoning and "stamina".\n\n"I see possible futures, all at once.\nShow more\n7\n13\n86\n3.8K\nMinh Nhat Nguyen\n@menhguin\n·\n27m\nyou should def look at the Alternate Uses Test and Divergent Association Tests which are common tests for creativity\n22\nNature Portfolio\n@NaturePortfolio\n·\n4h\nA paper in \n@SciReports\n describes a partial skeleton collected from the Middle Jurassic Xinhe Formation of Gansu Province in China that represents a new taxon of non-neosauropod eusauropods and was named Jinchuanloong niedu. https://go.nature.com/3Hx9y3O\n3\n12\n5.2K\nxjdr\n@_xjdr\n·\n46m\nrust is not well represented in the training data of the current SOTA models but i am becoming increasingly convinced it is the optimal language for models to write in and most importantly get to feedback from the compiler. in many ways, it was designed perfectly for it.\n12\n9\n75\n1.3K\nMinh Nhat Nguyen\n@menhguin\n·\n34m\n4\n54\nRob Bensinger  reposted\nvitrupo\n@vitrupo\n·\nMay 27\nSteven Bartlett says a top AI CEO tells the public "everything will be fine" -- but privately expects something "pretty horrific."\n\nA friend told him: "What [the CEO] tells me in private is not what he's saying publicly."\n127\n264\n1.2K\n409K\nCate Hall\n@catehall\n·\n18h\nThis image is so load-bearing for me psychologically -- I think about it all the time\n52\n181\n4.2K\n142K\nalice\n@__justplaying\n·\n\n16\n45\n918\n28K\nJakeup\n@yashkaf\n·\nMay 29\nmaking Harry Potter a "destined hero marked at birth" instead of a guy whose skills are *earned* made the plot worse, the characters unrelatable, and enabled lazy cop outs and ex-machinas\nQuote\nmeme guy \n@mask_guy\n·\nMay 27\ncan you trigger a fan base with one sentence\n57\n22\n676\n32K
-
-Example Correct Output:
-<Negative>Steven Bartlett says a top AI CEO tells the public</Negative>
-<Negative>pretty horrific</Negative>
-<Negative>This image is so load-bearing for me psychologically</Negative>
-<Negative>the characters unrelatable, and enabled lazy cop outs and ex-machinas</Negative>
-<Negative>can you trigger a fan base with one sentence</Negative>`;
-
-// Default AI User Prompt Prefix (kept for popup.js features)
-const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed:\n\n----\n`;
-const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now
 
 // AI Model Configuration (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL) now comes from llm.js,
 // loaded before popup.js in popup.html.
@@ -441,7 +406,8 @@ async function checkIsOnAllowedSite(tab) {
             }
             try {
                 const tabHostname = new URL(tab.url).hostname;
-                const match = sites.some(site => tabHostname.endsWith(site));
+                // Exact host or subdomain only — a bare endsWith('x.com') would match netflix.com.
+                const match = sites.some(site => tabHostname === site || tabHostname.endsWith('.' + site));
                 resolve(match);
             } catch (e) {
                 console.warn("[Forcefield] Could not parse current tab URL:", tab.url, e);
@@ -604,18 +570,16 @@ function stopContinuousScanning() {
     });
 }
 
-// Helper to trigger the main blocking script
+// Helper to trigger the main blocking script. Delegates to the background service
+// worker so there is exactly ONE matcher implementation (background.js:
+// actualContentBlockingFunction) — the popup used to carry its own stale copy.
+// The background reads blockList/debugMode/whiteboxMode from storage itself, so
+// the parameters are accepted only for caller compatibility.
 function triggerPageBlock(blockListToUse, debugMode) {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         if (tabs[0] && tabs[0].id) {
-            chrome.storage.local.get(['whiteboxMode'], (result) => { // Get whitebox mode state
-                const whiteboxMode = result.whiteboxMode || false;
-                chrome.scripting.executeScript({
-                    target: { tabId: tabs[0].id },
-                    func: injectContentScript,
-                    args: [blockListToUse, debugMode, whiteboxMode] // Pass whiteboxMode
-                }).catch(err => console.error("[Forcefield] Error injecting/running main block script: ", err));
-            });
+            chrome.runtime.sendMessage({ command: "runBlocker", tabId: tabs[0].id })
+                .catch(err => console.error("[Forcefield] Error asking background to run blocker:", err));
         } else {
             console.error("[Forcefield] Could not get active tab ID to block content.");
         }
@@ -794,225 +758,6 @@ function updateLevel(index, newLevel) {
     });
 }
 
-// This function will be injected into the content page
-function injectContentScript(blockListToUse, debugMode, whiteboxMode) {
-    // console.log("[Forcefield] Injecting content script with blocklist:", blockListToUse, "Debug Mode:", debugMode);
-
-    const hiddenMarker = 'hiddenByForcefield';
-    const debugHighlightClass = 'forcefield-debug-highlight'; // For potential CSS targeting
-    const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important; position: relative;'; // Added position relative
-    const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important; position: relative;'; // Added position relative
-    const refineButtonStyle = `
-        position: absolute;
-        top: 2px;
-        right: 2px;
-        z-index: 99999999;
-        padding: 2px 5px;
-        font-size: 10px;
-        background-color: #007bff;
-        color: white;
-        border: none;
-        border-radius: 3px;
-        cursor: pointer;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    `;
-
-
-    // First, reset all previously affected elements by this script
-    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}]`); // Simplified selector
-    previouslyAffected.forEach(el => {
-        // Remove the refine button if it exists
-        const oldButton = el.querySelector('.forcefield-refine-button');
-        if (oldButton) {
-            oldButton.remove();
-        }
-
-        // Restore original styles if they were saved
-        if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
-        else el.style.display = '';
-
-        if (el.dataset.originalVisibility) el.style.visibility = el.dataset.originalVisibility;
-        else el.style.visibility = '';
-        
-        if (el.dataset.originalBorder) el.style.border = el.dataset.originalBorder;
-        else el.style.border = '';
-
-        if (el.dataset.originalBackgroundColor) el.style.backgroundColor = el.dataset.originalBackgroundColor;
-        else el.style.backgroundColor = '';
-
-        if (el.dataset.originalWidth) el.style.width = el.dataset.originalWidth;
-        else el.style.width = '';
-
-        if (el.dataset.originalHeight) el.style.height = el.dataset.originalHeight;
-        else el.style.height = '';
-        
-        el.innerHTML = el.dataset.originalInnerHTML || ''; // Restore content if whiteboxed
-
-        el.classList.remove(debugHighlightClass);
-        // Clean up all our custom dataset attributes
-        delete el.dataset[hiddenMarker];
-        delete el.dataset.originalDisplay;
-        delete el.dataset.originalVisibility;
-        delete el.dataset.originalBorder;
-        delete el.dataset.originalBackgroundColor;
-        delete el.dataset.originalWidth;
-        delete el.dataset.originalHeight;
-        delete el.dataset.originalInnerHTML;
-        delete el.dataset.blockedContent; // Clean up blocked content data
-
-        // Attempt to revert any other inline styles that might have been set for visibility
-        // if (el.style.visibility === 'hidden' || el.style.display === 'none') {
-        //      el.style.visibility = 'revert';
-        //      el.style.display = 'revert';
-        // }
-    });
-
-    // Helper function to normalize different apostrophe/single quote characters
-    function normalizeApostrophes(str) {
-        if (!str) return str;
-        return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'"); // Replaces ' ' ` ´ with standard '
-    }
-
-    function blockListedContent(blockList) {
-        console.log(`[Forcefield] Starting scan for ${blockList.length} words/phrases. Debug: ${debugMode}`);
-        const allElements = document.body.getElementsByTagName('*');
-        let elementsAffected = 0;
-        // const hiddenMarker = 'hiddenByForcefield'; // Already defined above
-
-        // Iterate backwards through all elements
-        for (let i = allElements.length - 1; i >= 0; i--) {
-            const element = allElements[i];
-
-            // Skip elements that are already hidden by means other than this script if not in debug mode
-            // if (!debugMode && element.style.display === 'none' && !element.dataset[hiddenMarker] && !element.classList.contains(debugHighlightClass)) {
-            //     continue;
-            // }
-            // Simpler skip: if it's display: none and we didn't do it, skip. If debug, we might unhide.
-            // For whitebox mode, we don't want to skip elements that are display: none, as we might want to "whitebox" them if they contain blocked content.
-            // Only skip if it's display: none AND we didn't hide/whitebox it AND it's not debug mode.
-            if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !debugMode) {
-                continue;
-            }
-
-            // Check direct child text nodes for blocked content
-            let foundMatch = null;
-            let matchedBlockItem = null; // Store the item that caused the match
-
-            for (const childNode of element.childNodes) {
-                // Check only text nodes (nodeType 3) that have non-empty content
-                if (childNode.nodeType === 3 && childNode.nodeValue && childNode.nodeValue.trim()) {
-                    // Normalize and lower-case the text node's value
-                    const normalizedNodeText = normalizeApostrophes(childNode.nodeValue).toLowerCase();
-                    const originalText = childNode.nodeValue.trim(); // Keep original case for sending to AI
-
-                    // Check if this text contains any blocked word/phrase (normalized)
-                    for (const item of blockList) {
-                        // Normalize and lower-case the blocked item's text
-                        const normalizedBlockText = normalizeApostrophes(item.text).toLowerCase();
-                        // Use normalized texts for comparison
-                        if (normalizedNodeText.includes(normalizedBlockText)) {
-                            foundMatch = element; // The element containing the text node is the target
-                            matchedBlockItem = item; // Store the matched item
-                            foundMatch.dataset.blockedContent = originalText; // Store the original text content
-                            break; // Found a match for this text node, stop checking blocklist items
-                        }
-                    }
-                }
-                if (foundMatch) {
-                    break; // Found a match within this element's children, stop checking child nodes
-                }
-            }
-
-            // If a match was found in the direct text nodes of this element
-            if (foundMatch && matchedBlockItem) { // Need both element and the block item details
-                const levelsToAscend = matchedBlockItem.level;
-
-                // Find the target element by ascending the DOM, stopping before body/html
-                let elementToHide = foundMatch; // Start ascent from the element containing the text node
-                let actualLevelsAscended = 0; // Track how many levels we actually went up
-                for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
-                    // Check BEFORE ascending: Is the *next* parent body or html?
-                    if (elementToHide.parentElement === document.body || elementToHide.parentElement === document.documentElement) {
-                        if (levelsToAscend > 0) { // Only log if we intended to ascend at all
-                            console.warn(`[Forcefield] Ascent for "${matchedBlockItem.text}" (level ${levelsToAscend}) stopped early at level ${j} to avoid hiding BODY/HTML. Hiding current element instead:`, elementToHide);
-                        }
-                        break; // Stop ascending
-                    }
-                    elementToHide = elementToHide.parentElement;
-                    actualLevelsAscended++;
-                }
-
-                // Check if the target is valid and not already hidden by this script
-                // The check for body/html here is a safeguard, the loop should prevent reaching them directly.
-                if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
-
-                    // Hide the element and mark it or highlight it
-                    if (debugMode) {
-                        if (!elementToHide.classList.contains(debugHighlightClass)) {
-                            // console.log(`[Forcefield Debug] Highlighting element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide);
-                            elementToHide.style.cssText += debugHighlightStyle; // Append to existing styles
-                            elementToHide.classList.add(debugHighlightClass);
-                            elementToHide.dataset[hiddenMarker] = 'debug'; // Mark as affected by debug
-                            elementsAffected++;
-                        }
-                    } else if (whiteboxMode) {
-                        if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') {
-                            // console.log(`[Forcefield Whitebox] Applying whitebox (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide);
-                            
-                            // Save original styles and content
-                            elementToHide.dataset.originalDisplay = elementToHide.style.display || '';
-                            elementToHide.dataset.originalVisibility = elementToHide.style.visibility || '';
-                            elementToHide.dataset.originalBorder = elementToHide.style.border || '';
-                            elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
-                            const computedStyle = window.getComputedStyle(elementToHide);
-                            elementToHide.dataset.originalWidth = computedStyle.width;
-                            elementToHide.dataset.originalHeight = computedStyle.height;
-                            elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
-
-                            elementToHide.innerHTML = ''; // Clear content
-                            elementToHide.style.cssText += whiteboxStyle; // Apply whitebox styles
-                            // Ensure dimensions are preserved
-                            elementToHide.style.width = elementToHide.dataset.originalWidth;
-                            elementToHide.style.height = elementToHide.dataset.originalHeight;
-                            // Ensure it's displayed as a block or inline-block to hold space
-                            if (computedStyle.display === 'inline') {
-                                elementToHide.style.display = 'inline-block';
-                            } else if (computedStyle.display === 'none' || computedStyle.display === '') {
-                                // If it was originally display:none, or display not set, default to block.
-                                // Content script might have unhidden it.
-                                elementToHide.style.display = 'block';
-                            } else {
-                                elementToHide.style.display = computedStyle.display; // Keep original display type if not inline/none
-                            }
-                            elementToHide.dataset[hiddenMarker] = 'whiteboxed';
-                            elementsAffected++;
-                        }
-                    } else {
-                        if (elementToHide.style.display !== 'none') {
-                            // console.log(`[Forcefield] Hiding element (level ${actualLevelsAscended} ancestor) for "${matchedBlockItem.text}":`, elementToHide); // More accurate log
-                            elementToHide.style.display = 'none';
-                            elementToHide.dataset[hiddenMarker] = 'true'; // Mark as hidden
-                            elementsAffected++;
-                        }
-                    }
-                } else if (elementToHide && elementToHide.dataset[hiddenMarker]) { // Check if already marked by us
-                    // Element already hidden by us, or highlighted by us, or whiteboxed by us. Do nothing.
-                } else if (elementToHide === document.body || elementToHide === document.documentElement) {
-                     // Log if we still somehow ended up targeting body/html (e.g., original element was body/html and level was 0)
-                     console.warn(`[Forcefield] Avoided affecting BODY/HTML directly for "${matchedBlockItem.text}". Element was likely too high or level too large.`);
-                }
-            }
-        }
-        if (elementsAffected > 0) {
-            console.log(`[Forcefield] Scan finished. ${debugMode ? 'Highlighted' : 'Hid'} ${elementsAffected} elements/ancestors.`);
-        } else {
-            console.log(`[Forcefield] Scan finished. No new elements ${debugMode ? 'highlighted' : 'hidden'}.`);
-        }
-    }
-
-    // Run the blocking logic
-    blockListedContent(blockListToUse);
-}
 
 // --- New API Key Management Functions ---
 function loadApiKeys() {
@@ -1234,6 +979,9 @@ async function addSuggestedWords(suggestions, defaultLevelOverride = null, sourc
             chrome.storage.local.set({ blockList }, () => {
                 console.log(`[Forcefield AI - ${source}] Added ${addedCount} new suggestions to the blocklist.`);
                 displayBlockList(blockList);
+                // Apply the updated list immediately so the user sees the effect
+                // without having to click "Block Listed Content" afterwards.
+                triggerPageBlock(blockList, false);
                 if (source !== 'ai_continuous') {
                     alert(`Added ${addedCount} AI suggestions to the blocklist.`);
                 }

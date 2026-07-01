@@ -1,31 +1,6 @@
 // Provider abstraction (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM)
 importScripts('llm.js');
 
-// Default AI System Prompt
-const DEFAULT_SYSTEM_PROMPT = `Your task is to identify potentially controversial, politically charged, or negative statements within the provided text content. Ignore common interface elements like buttons, navigation text ('Home', 'About', 'Contact'), etc., unless they are part of a larger controversial statement.
-
-Focus on extracting specific statements (phrases or sentences) that:
-- Criticize political figures or parties
-- Make controversial claims
-- Contain strong negative opinions or insults
-- Discuss polarizing social or political topics
-- Use inflammatory or charged language
-
-For each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.
-Do NOT add explanations, apologies, or any text outside the <Negative> tags.
-Do NOT tag entire paragraphs; the tool only works on single statements.
-Be selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.
-
-Example Input Text:
-'The new policy announced yesterday is terrible. Many people are upset. Read more on our blog. Meanwhile, the weather is nice.'
-
-Example Correct Output:
-<Negative>The new policy announced yesterday is terrible.</Negative>
-<Negative>Many people are upset.</Negative>`;
-
-// Default AI User Prompt Prefix
-const DEFAULT_USER_PROMPT_PREFIX = "Analyze the following text content and extract potentially controversial, politically charged, or negative statements using <Negative> tags as instructed:\n\n----\n";
-const DEFAULT_USER_PROMPT_SUFFIX = "\n----\n\nRemember to only return the tagged statements, nothing else.";
 
 // AI Model Configuration now lives in llm.js (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL).
 
@@ -195,7 +170,7 @@ The output should be ready to be used directly as the new system prompt.`;
             // 5. Notify the user
             chrome.notifications.create({
                 type: 'basic',
-                iconUrl: 'icon128.png', // You'll need to create this icon
+                iconUrl: 'icons/icon128.png', // You'll need to create this icon
                 title: 'Forcefield AI Updated',
                 message: 'The AI system prompt has been refined based on your feedback.'
             });
@@ -213,7 +188,7 @@ The output should be ready to be used directly as the new system prompt.`;
         console.error('[Forcefield BG] Error during AI prompt refinement:', error);
         chrome.notifications.create({
             type: 'basic',
-            iconUrl: 'icon128.png', // You'll need to create this icon
+            iconUrl: 'icons/icon128.png', // You'll need to create this icon
             title: 'Forcefield AI Error',
             message: `Failed to refine AI prompt: ${error.message}`
         });
@@ -245,8 +220,11 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
     const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important;';
 
-    // First, reset all previously affected elements
-    const previouslyAffected = document.querySelectorAll(`[data-${hiddenMarker}]`);
+    // First, reset all previously affected elements.
+    // NOTE: dataset.hiddenByForcefield serializes to the attribute
+    // data-hidden-by-forcefield — the selector must use the kebab-case form
+    // (the old camelCase selector matched nothing, so resets never ran).
+    const previouslyAffected = document.querySelectorAll('[data-hidden-by-forcefield]');
     previouslyAffected.forEach(el => {
         // Restore original styles if they were saved
         if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
@@ -267,7 +245,12 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         if (el.dataset.originalHeight) el.style.height = el.dataset.originalHeight;
         else el.style.height = '';
         
-        el.innerHTML = el.dataset.originalInnerHTML || ''; // Restore content if whiteboxed
+        // Restore content ONLY if we whiteboxed it (originalInnerHTML saved).
+        // An unconditional assignment would wipe the content of elements that
+        // were merely hidden or highlighted.
+        if (el.dataset.originalInnerHTML !== undefined) {
+            el.innerHTML = el.dataset.originalInnerHTML;
+        }
 
         el.classList.remove(debugHighlightClass);
         delete el.dataset[hiddenMarker];
@@ -303,6 +286,12 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
             continue;
         }
 
+        // Never match inside script/style content.
+        const tagName = element.tagName;
+        if (tagName === 'SCRIPT' || tagName === 'STYLE' || tagName === 'NOSCRIPT') {
+            continue;
+        }
+
         let foundMatch = null;
         let matchedBlockItem = null;
 
@@ -331,8 +320,15 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         if (foundMatch && matchedBlockItem) {
             const levelsToAscend = matchedBlockItem.level;
             let elementToHide = foundMatch;
+            // Never climb past the enclosing post: X wraps each post in an
+            // <article>, so clamping the ascent there means a generous level
+            // hides/highlights exactly one post instead of a whole column.
+            const postContainer = foundMatch.closest ? foundMatch.closest('article') : null;
             let actualLevelsAscended = 0;
             for (let j = 0; j < levelsToAscend && elementToHide.parentElement; j++) {
+                if (postContainer && elementToHide === postContainer) {
+                    break;
+                }
                 if (elementToHide.parentElement === document.body || elementToHide.parentElement === document.documentElement) {
                     if (levelsToAscend > 0) {
                         console.warn(`[Forcefield Content Blocker (from SW)] Ascent for "${matchedBlockItem.text}" (level ${levelsToAscend}) stopped early at level ${j}. Hiding:`, elementToHide);
@@ -558,7 +554,7 @@ async function refinePromptsWithAI(selectedText, tabId) {
             logToPageConsole(tabId, `[Forcefield AI] Prompts have been updated! Please review them in the extension popup.`);
             chrome.notifications.create({
                 type: 'basic',
-                iconUrl: 'icon48.png',
+                iconUrl: 'icons/icon48.png',
                 title: 'Forcefield Prompts Updated',
                 message: 'The AI has refined your blocking prompts. Check the popup to see the changes.'
             });
@@ -676,10 +672,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             await refinePromptsWithAI(request.text, sender.tab.id);
             sendResponse({status: "Refinement request received"});
         } else if (request.command === "runBlocker") {
-            const { blockList, debugMode, whiteboxMode } = await new Promise(resolve => {
-                chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode'], resolve);
-            });
-            await triggerPageBlock(sender.tab.id, blockList, debugMode, whiteboxMode);
+            // Sent by content scripts (sender.tab set) AND by the popup
+            // (no sender.tab — it passes request.tabId instead).
+            const targetTabId = (sender.tab && sender.tab.id) || request.tabId;
+            if (targetTabId) {
+                const { blockList, debugMode, whiteboxMode } = await new Promise(resolve => {
+                    chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode'], resolve);
+                });
+                if (blockList && blockList.length > 0) {
+                    triggerPageBlock(targetTabId, blockList, debugMode || false, whiteboxMode || false);
+                }
+            }
             sendResponse({status: "Blocker triggered"});
         } else if (request.command === "refineSystemPrompt") {
             const tabId = sender.tab ? sender.tab.id : null;
@@ -704,7 +707,8 @@ async function isSiteAllowed(url) {
             }
             try {
                 const urlHostname = new URL(url).hostname;
-                const match = sites.some(site => urlHostname.endsWith(site));
+                // Exact host or subdomain only — a bare endsWith('x.com') would match netflix.com.
+                const match = sites.some(site => urlHostname === site || urlHostname.endsWith('.' + site));
                 resolve(match);
             } catch (e) {
                 console.warn("[Forcefield BG] Could not parse URL for site check:", url, e);
@@ -758,52 +762,59 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
     }
 
     console.log(`${onMessageLogPrefix} Received from tab: ${tabId}`);
-    
+
     try {
         const result = await chrome.storage.local.get(['isScanning', 'activeScanTabId']);
-        
-        if (result.isScanning && result.activeScanTabId === tabId) {
-            const ongoing = await isScanOngoingForTab(tabId);
-            if (ongoing) {
-                console.log(`${onMessageLogPrefix} Scan already in progress for tab ${tabId}. Ignoring new content.`);
-                safeSendResponse({status: "Scan already in progress, content ignored"});
-                return;
-            }
-            
-            setScanOngoingForTab(tabId, true);
-            console.log(`${onMessageLogPrefix} Processing content for tab ${tabId}.`);
-            safeSendResponse({status: "Content received and is being processed"}); // Acknowledge receipt
 
-            await handleNewContent(text, tabId);
-
-        } else {
-            let reason = "Content ignored: Conditions not met.";
-            if (!result.isScanning) reason = "Global scanning is off";
-            else if (result.activeScanTabId !== tabId) reason = `Content from inactive tab ${tabId} (active is ${result.activeScanTabId})`;
-            
+        if (!(result.isScanning && result.activeScanTabId === tabId)) {
+            const reason = !result.isScanning
+                ? "Global scanning is off"
+                : `Content from inactive tab ${tabId} (active is ${result.activeScanTabId})`;
             console.log(`${onMessageLogPrefix} Content from tab ${tabId} will be ignored. Reason: ${reason}.`);
             safeSendResponse({status: "Content ignored by background", reason: reason});
+            return;
+        }
+
+        if (ongoingScans[tabId]) {
+            // A scan is already in flight for this tab. BUFFER the text instead of
+            // dropping it (AI calls take seconds; dropping meant most scrolled
+            // content was never analyzed). It is processed as a follow-up scan
+            // as soon as the current one finishes.
+            const combined = (pendingScanText[tabId] ? pendingScanText[tabId] + '\n\n' : '') + text;
+            pendingScanText[tabId] = combined.slice(-12000); // keep the newest content, cap growth
+            console.log(`${onMessageLogPrefix} Scan in progress for tab ${tabId}; buffered ${text.length} chars for follow-up.`);
+            safeSendResponse({status: "Scan in progress, content buffered"});
+            return;
+        }
+
+        ongoingScans[tabId] = true;
+        console.log(`${onMessageLogPrefix} Processing content for tab ${tabId}.`);
+        safeSendResponse({status: "Content received and is being processed"}); // Acknowledge receipt
+        try {
+            await handleNewContent(text, tabId);
+            // Drain anything that arrived while we were scanning.
+            while (pendingScanText[tabId]) {
+                const followUp = pendingScanText[tabId];
+                delete pendingScanText[tabId];
+                console.log(`${onMessageLogPrefix} Processing ${followUp.length} buffered chars for tab ${tabId}.`);
+                await handleNewContent(followUp, tabId);
+            }
+        } finally {
+            // Cleared here — NOT in an outer finally, which used to release the
+            // lock from the "ignored" branch while another scan was still running.
+            delete ongoingScans[tabId];
         }
     } catch (error) {
         console.error(`${onMessageLogPrefix} Error processing new content:`, error);
         safeSendResponse({status: "Error processing content", error: error.message});
-    } finally {
-        setScanOngoingForTab(tabId, false);
     }
 }
 
-// We need a store for ongoing scans that is not lost when the service worker sleeps
-const ongoingScans = {}; // Simple in-memory lock
-async function isScanOngoingForTab(tabId) {
-    return ongoingScans[tabId] || false;
-}
-async function setScanOngoingForTab(tabId, isOngoing) {
-    if (isOngoing) {
-        ongoingScans[tabId] = true;
-    } else {
-        delete ongoingScans[tabId];
-    }
-}
+// In-memory per-tab scan locks and overflow buffers. Reset when the service
+// worker sleeps, which is fine — a lost buffer just means the next mutation
+// batch re-sends fresh content.
+const ongoingScans = {};
+const pendingScanText = {};
 
 
 async function handleNewContent(text, tabId) {
@@ -852,6 +863,15 @@ async function handleNewContent(text, tabId) {
             await addSuggestionsToBlocklist(suggestions, tabId, allConfig.whiteboxMode, allConfig.debugMode);
         }
 
+        // ALWAYS re-apply the current blocklist after a scan — even with zero new
+        // suggestions. X virtualizes the timeline (posts leave and re-enter the DOM),
+        // so newly rendered posts matching EXISTING entries would otherwise never
+        // get hidden/highlighted.
+        const { blockList } = await chrome.storage.local.get(['blockList']);
+        if (blockList && blockList.length > 0) {
+            triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode || false);
+        }
+
     } catch (error) {
         console.error(`${logPrefix} Error during AI analysis:`, error);
         logToPageConsole(tabId, `[Forcefield AI] ERROR during analysis: ${error.message}`);
@@ -881,8 +901,8 @@ async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debug
         
         chrome.runtime.sendMessage({ command: "blockListUpdated", newSuggestions: newSuggestions })
             .catch(err => {/* Popup not open, ignore error */});
-
-        triggerPageBlock(tabId, currentBlockList, debugMode, whiteboxMode);
+        // Note: the page re-block is triggered by handleNewContent after this
+        // returns (it re-applies the list unconditionally), so no trigger here.
     }
 }
 
