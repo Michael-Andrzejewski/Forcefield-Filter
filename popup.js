@@ -64,7 +64,52 @@ document.addEventListener('DOMContentLoaded', () => {
     loadWhiteboxModeState(); // Added for whitebox mode
     setupCollapsibleSections(); // Setup collapsible sections
     renderTwitterActivity(); // Twitter like/mute/block/not-interested log
+    loadSpendInfo(); // AI spend counters + budget limit inputs
 });
+
+// --- AI Budget (spend counters + limits) ---
+// getSpendState / getSpendLimits / DEFAULT_SPEND_LIMITS come from llm.js.
+async function loadSpendInfo() {
+    try {
+        const [{ hourSpend, daySpend }, limits] = await Promise.all([getSpendState(), getSpendLimits()]);
+        const summary = `AI spend: $${hourSpend.toFixed(2)}/$${limits.hourly.toFixed(2)} this hour · $${daySpend.toFixed(2)}/$${limits.daily.toFixed(2)} today`;
+        ['spendDisplay', 'devSpendDisplay'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = summary;
+        });
+        const detail = document.getElementById('budgetSpendDetail');
+        if (detail) detail.textContent = summary + '. Calls pause when a limit is hit and resume as spend ages out.';
+
+        const hourlyInput = document.getElementById('hourlyLimitInput');
+        const dailyInput = document.getElementById('dailyLimitInput');
+        // Don't clobber a value the user is mid-typing.
+        if (hourlyInput && document.activeElement !== hourlyInput) hourlyInput.value = limits.hourly;
+        if (dailyInput && document.activeElement !== dailyInput) dailyInput.value = limits.daily;
+    } catch (e) {
+        console.warn('[Forcefield Popup] Could not load spend info:', e);
+    }
+}
+
+const saveSpendLimitsButton = document.getElementById('saveSpendLimitsButton');
+if (saveSpendLimitsButton) {
+    saveSpendLimitsButton.addEventListener('click', () => {
+        const hourly = parseFloat(document.getElementById('hourlyLimitInput').value);
+        const daily = parseFloat(document.getElementById('dailyLimitInput').value);
+        if (isNaN(hourly) || isNaN(daily) || hourly <= 0 || daily <= 0) {
+            alert('Limits must be positive dollar amounts.');
+            return;
+        }
+        if (daily < hourly) {
+            alert('The daily limit should be at least the hourly limit.');
+            return;
+        }
+        chrome.storage.sync.set({ spendLimits: { hourly: hourly, daily: daily } }, () => {
+            console.log(`[Forcefield Popup] Spend limits saved: $${hourly}/hr, $${daily}/day.`);
+            loadSpendInfo();
+            alert(`Budget saved: $${hourly.toFixed(2)}/hour, $${daily.toFixed(2)}/day.`);
+        });
+    });
+}
 
 // Add word to blocklist
 addButton.addEventListener('click', addWord);
@@ -194,10 +239,13 @@ if (clearTwitterLogButton) {
     });
 }
 
-// Live-update the log while the popup is open (e.g. you like a tweet in another tab).
+// Live-update the log and spend counters while the popup is open.
 chrome.storage.onChanged.addListener((changes, area) => {
     if (area === 'local' && changes.twitterActivity) {
         renderTwitterActivity();
+    }
+    if (area === 'local' && changes.aiSpendLog) {
+        loadSpendInfo();
     }
 });
 
@@ -929,20 +977,6 @@ async function getAiSuggestions() {
     });
 }
 
-// Helper function to parse <Negative> tags
-function extractNegativeTags(text) {
-    const regex = /<Negative>(.*?)<\/Negative>/gs; // Use gs for global and dotall. Corrected escaping for /
-    const matches = [];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-        // Trim whitespace and ensure it's not empty
-        const suggestion = match[1].trim();
-        if (suggestion) {
-             matches.push(suggestion);
-        }
-    }
-    return matches;
-}
 
 // Modified addWord function to handle an array of suggestions
 // Make async to get tab URL for default level

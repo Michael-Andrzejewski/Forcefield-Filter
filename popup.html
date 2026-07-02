@@ -433,6 +433,7 @@
             <span id="scanningButtonText">Start Scanning</span>
           </button>
           <p id="scanningStatus" style="font-size: 12px; margin-top: 8px; color: #7f8c8d;"></p>
+          <p id="spendDisplay" style="font-size: 11px; margin-top: 4px; color: #7f8c8d;"></p>
         </div>
       </div>
 
@@ -486,6 +487,7 @@
               <span id="devScanningButtonText">Start Scanning</span>
             </button>
             <p id="devScanningStatus" style="font-size: 12px; margin-top: 8px; color: #7f8c8d;"></p>
+            <p id="devSpendDisplay" style="font-size: 11px; margin-top: 4px; color: #7f8c8d;"></p>
           </div>
           
           <div class="action-buttons">
@@ -561,6 +563,26 @@
           <div class="add-site-container">
             <input type="password" class="site-input" id="geminiApiKey" placeholder="Enter Gemini API key">
             <button class="add-site-btn" id="saveGeminiApiKey">Save</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- AI Budget Section -->
+      <div class="dev-section">
+        <div class="dev-section-header">
+          <div class="dev-section-title">AI Budget</div>
+          <div class="collapse-icon">▼</div>
+        </div>
+        <div class="dev-section-content">
+          <p id="budgetSpendDetail" style="font-size: 11px; color: #7f8c8d; margin: 0 0 8px 0;"></p>
+          <div class="section-title">Hourly limit (USD)</div>
+          <div class="add-site-container">
+            <input type="number" class="site-input" id="hourlyLimitInput" min="0.05" step="0.05" placeholder="1.00">
+          </div>
+          <div class="section-title" style="margin-top: 12px;">Daily limit (USD)</div>
+          <div class="add-site-container">
+            <input type="number" class="site-input" id="dailyLimitInput" min="0.05" step="0.05" placeholder="2.00">
+            <button class="add-site-btn" id="saveSpendLimitsButton">Save</button>
           </div>
         </div>
       </div>

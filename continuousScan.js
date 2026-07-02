@@ -11,6 +11,44 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     const MIN_COMBINED_TEXT_LENGTH = 50; // Minimum length for the combined text to be sent to AI
     const MIN_ALPHA_RATIO = 0.7; // Minimum ratio of alphabetic characters in the text
 
+    // On X/Twitter, send ONLY tweet text to the AI (not nav chrome, counts,
+    // usernames, ads scaffolding) and dedupe tweets we've already sent. X's
+    // virtualized timeline re-mounts the same tweets constantly while
+    // scrolling — without dedup every re-mount would be re-billed.
+    const IS_TWITTER = /(^|\.)(twitter|x)\.com$/.test(location.hostname);
+    const sentTweetKeys = new Set();
+    const SENT_KEYS_MAX = 1000;
+
+    function rememberTweetKey(key) {
+        sentTweetKeys.add(key);
+        if (sentTweetKeys.size > SENT_KEYS_MAX) {
+            // Sets iterate in insertion order; drop the oldest entry.
+            sentTweetKeys.delete(sentTweetKeys.values().next().value);
+        }
+    }
+
+    // Collect tweet texts under `root` that we have NOT sent to the AI yet.
+    // Returns { texts, sawTweets } — sawTweets is true if ANY tweet rendered
+    // (even an already-sent one), so the caller still re-runs the blocker.
+    function collectNewTweetTexts(root) {
+        const texts = [];
+        let sawTweets = false;
+        const els = [];
+        if (root.matches && root.matches('[data-testid="tweetText"]')) els.push(root);
+        if (root.querySelectorAll) els.push(...root.querySelectorAll('[data-testid="tweetText"]'));
+        for (const el of els) {
+            const t = (el.innerText || el.textContent || '').trim();
+            if (t.length < MIN_NODE_TEXT_LENGTH) continue;
+            sawTweets = true;
+            const key = t.slice(0, 100);
+            if (!sentTweetKeys.has(key)) {
+                rememberTweetKey(key);
+                texts.push(t);
+            }
+        }
+        return { texts: texts, sawTweets: sawTweets };
+    }
+
     function canSendMessage() {
         return chrome.runtime && chrome.runtime.sendMessage;
     }
@@ -46,6 +84,11 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         }
         console.log('[Forcefield CS] Performing initial page scan...');
         const initialScanBuffer = [];
+
+        if (IS_TWITTER) {
+            // Tweet-only mode: collect just the tweet bodies on screen.
+            initialScanBuffer.push(...collectNewTweetTexts(document.body).texts);
+        }
 
         function collectVisibleTextRecursive(node, buffer) {
             // 1. Skip if node itself is undesirable
@@ -85,7 +128,9 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             }
         }
 
-        collectVisibleTextRecursive(document.body, initialScanBuffer);
+        if (!IS_TWITTER) {
+            collectVisibleTextRecursive(document.body, initialScanBuffer);
+        }
 
         if (initialScanBuffer.length > 0) {
             const combinedText = initialScanBuffer.join('\n\n').trim();
@@ -112,6 +157,24 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         if (!isObserving) return; // Check against the script-local isObserving
 
         let significantChangeDetected = false;
+
+        if (IS_TWITTER) {
+            // Tweet-only mode: pull tweet bodies out of newly mounted subtrees.
+            // Already-sent tweets still count as a "change" so the blocker
+            // re-applies to them, but they aren't re-sent to the AI.
+            for (const mutation of mutationsList) {
+                if (mutation.type !== 'childList') continue;
+                for (const node of mutation.addedNodes) {
+                    if (node.nodeType !== Node.ELEMENT_NODE) continue;
+                    const found = collectNewTweetTexts(node);
+                    if (found.sawTweets) significantChangeDetected = true;
+                    if (found.texts.length > 0) newTextBuffer.push(...found.texts);
+                }
+            }
+            scheduleDebouncedFlush(significantChangeDetected);
+            return;
+        }
+
         for (const mutation of mutationsList) {
             if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
                 mutation.addedNodes.forEach(node => {
@@ -185,6 +248,13 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             }
         }
 
+        scheduleDebouncedFlush(significantChangeDetected);
+    }
+
+    // Debounced flush shared by the generic and tweet-only mutation paths:
+    // re-applies the blocklist to whatever just rendered, and ships any new
+    // buffered text to the AI if it clears the significance bar.
+    function scheduleDebouncedFlush(significantChangeDetected) {
         if (significantChangeDetected) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {

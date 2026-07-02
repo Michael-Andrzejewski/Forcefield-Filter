@@ -68,18 +68,6 @@ async function logToPageConsole(tabId, ...args) {
   }
 }
 
-function extractNegativeTags(text) {
-    const regex = /<Negative>(.*?)<\/Negative>/gs;
-    const matches = [];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-        const suggestion = match[1].trim();
-        if (suggestion) {
-             matches.push(suggestion);
-        }
-    }
-    return matches;
-}
 
 // Function to determine the default block level based on the site URL
 function getDefaultLevelForSite(url) {
@@ -254,6 +242,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 
         el.classList.remove(debugHighlightClass);
         delete el.dataset[hiddenMarker];
+        delete el.dataset.originalStyleAttr;
         delete el.dataset.originalDisplay;
         delete el.dataset.originalVisibility;
         delete el.dataset.originalBorder;
@@ -271,6 +260,87 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     console.log(`[Forcefield Content Blocker (from SW)] Starting scan for ${blockListToUse.length} words/phrases. Debug: ${debugMode}`);
     const allElements = document.body.getElementsByTagName('*');
     let elementsAffected = 0;
+
+    // Apply the active mode (highlight / whitebox / hide) to one element.
+    // Shared by the direct match and its same-cell reply siblings.
+    function applyTreatment(elementToHide) {
+        // The user clicked "reveal" on this element — leave it alone until
+        // X's virtualized timeline unmounts it.
+        if (elementToHide.dataset.forcefieldRevealed) return;
+
+        if (debugMode) {
+            if (!elementToHide.classList.contains(debugHighlightClass)) {
+                elementToHide.style.cssText += debugHighlightStyle;
+                elementToHide.classList.add(debugHighlightClass);
+                elementToHide.dataset[hiddenMarker] = 'debug';
+                elementsAffected++;
+            }
+        } else if (whiteboxMode) {
+            if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') {
+                const computedStyle = window.getComputedStyle(elementToHide);
+                // Full style attribute snapshot: the cleanest restore path for
+                // click-to-reveal (per-property restore is lossy after cssText +=).
+                elementToHide.dataset.originalStyleAttr = elementToHide.getAttribute('style') || '';
+                elementToHide.dataset.originalDisplay = elementToHide.style.display || '';
+                elementToHide.dataset.originalVisibility = elementToHide.style.visibility || '';
+                elementToHide.dataset.originalBorder = elementToHide.style.border || '';
+                elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
+                elementToHide.dataset.originalWidth = computedStyle.width;
+                elementToHide.dataset.originalHeight = computedStyle.height;
+                elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
+
+                elementToHide.innerHTML = '';
+                elementToHide.style.cssText += whiteboxStyle;
+                elementToHide.style.width = elementToHide.dataset.originalWidth;
+                elementToHide.style.height = elementToHide.dataset.originalHeight;
+                if (computedStyle.display === 'inline') {
+                    elementToHide.style.display = 'inline-block';
+                } else if (computedStyle.display === 'none' || computedStyle.display === ''){
+                    elementToHide.style.display = 'block';
+                } else {
+                    elementToHide.style.display = computedStyle.display;
+                }
+
+                // Click-to-reveal: show a small label; clicking the box restores
+                // the original content and styles and pins it as revealed.
+                const note = document.createElement('div');
+                note.textContent = 'Blocked by Forcefield - click to reveal';
+                note.style.cssText = 'color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; text-align: center !important; padding: 10px !important; user-select: none;';
+                elementToHide.appendChild(note);
+                elementToHide.style.cursor = 'pointer';
+                elementToHide.addEventListener('click', function onReveal(ev) {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    elementToHide.removeEventListener('click', onReveal, true);
+                    elementToHide.innerHTML = elementToHide.dataset.originalInnerHTML || '';
+                    if (elementToHide.dataset.originalStyleAttr) {
+                        elementToHide.setAttribute('style', elementToHide.dataset.originalStyleAttr);
+                    } else {
+                        elementToHide.removeAttribute('style');
+                    }
+                    delete elementToHide.dataset[hiddenMarker];
+                    delete elementToHide.dataset.originalStyleAttr;
+                    delete elementToHide.dataset.originalDisplay;
+                    delete elementToHide.dataset.originalVisibility;
+                    delete elementToHide.dataset.originalBorder;
+                    delete elementToHide.dataset.originalBackgroundColor;
+                    delete elementToHide.dataset.originalWidth;
+                    delete elementToHide.dataset.originalHeight;
+                    delete elementToHide.dataset.originalInnerHTML;
+                    elementToHide.dataset.forcefieldRevealed = '1';
+                }, true); // capture: run before X's own click handlers
+
+                elementToHide.dataset[hiddenMarker] = 'whiteboxed';
+                elementsAffected++;
+            }
+        } else {
+            if (elementToHide.style.display !== 'none') {
+                elementToHide.style.display = 'none';
+                elementToHide.dataset[hiddenMarker] = 'true';
+                elementsAffected++;
+            }
+        }
+    }
 
     // Pre-normalize block phrases once (avoids re-normalizing per element).
     const normalizedBlockItems = [];
@@ -340,47 +410,18 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
             }
 
             if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
-                if (debugMode) {
-                    if (!elementToHide.classList.contains(debugHighlightClass)) {
-                        elementToHide.style.cssText += debugHighlightStyle;
-                        elementToHide.classList.add(debugHighlightClass);
-                        elementToHide.dataset[hiddenMarker] = 'debug';
-                        elementsAffected++;
-                    }
-                } else if (whiteboxMode) {
-                    if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') {
-                        const computedStyle = window.getComputedStyle(elementToHide);
-                        elementToHide.dataset.originalDisplay = elementToHide.style.display || '';
-                        elementToHide.dataset.originalVisibility = elementToHide.style.visibility || '';
-                        elementToHide.dataset.originalBorder = elementToHide.style.border || '';
-                        elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
-                        elementToHide.dataset.originalWidth = computedStyle.width;
-                        elementToHide.dataset.originalHeight = computedStyle.height;
-                        elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
-
-                        elementToHide.innerHTML = '';
-                        elementToHide.style.cssText += whiteboxStyle;
-                        elementToHide.style.width = elementToHide.dataset.originalWidth;
-                        elementToHide.style.height = elementToHide.dataset.originalHeight;
-                        if (computedStyle.display === 'inline') {
-                            elementToHide.style.display = 'inline-block';
-                        } else if (computedStyle.display === 'none' || computedStyle.display === ''){
-                            elementToHide.style.display = 'block';
-                        } else {
-                            elementToHide.style.display = computedStyle.display;
+                applyTreatment(elementToHide);
+                // Replies rendered in the same timeline cell as a blocked post
+                // get the same treatment (X shows "post + reply" thread units
+                // inside one cellInnerDiv).
+                const cell = elementToHide.closest ? elementToHide.closest('[data-testid="cellInnerDiv"]') : null;
+                if (cell) {
+                    for (const sibling of cell.querySelectorAll('article')) {
+                        if (sibling !== elementToHide && !sibling.contains(elementToHide) && !elementToHide.contains(sibling)) {
+                            applyTreatment(sibling);
                         }
-                        elementToHide.dataset[hiddenMarker] = 'whiteboxed';
-                        elementsAffected++;
-                    }
-                } else {
-                    if (elementToHide.style.display !== 'none') {
-                        elementToHide.style.display = 'none';
-                        elementToHide.dataset[hiddenMarker] = 'true';
-                        elementsAffected++;
                     }
                 }
-            } else if (elementToHide && elementToHide.dataset[hiddenMarker]) {
-                // Already hidden or highlighted by us
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
                  console.warn(`[Forcefield Content Blocker (from SW)] Avoided affecting BODY/HTML for "${matchedBlockItem.text}".`);
             }
@@ -718,8 +759,81 @@ async function isSiteAllowed(url) {
     });
 }
 
+// --- Daily prompt personalization from the Twitter activity log ---------
+// Once per 24h (checked at scan start), ask Claude Haiku to refine the
+// system prompt using the user's own signals: liked tweets = content the
+// filter must NOT block; not-interested/muted/blocked = content it SHOULD.
+const PERSONALIZATION_INTERVAL_MS = 24 * 3600 * 1000;
+const PERSONALIZATION_MODEL = 'claude-haiku-4-5';
+const PERSONALIZATION_MIN_EXAMPLES = 3;
+
+async function maybePersonalizePrompt() {
+    const { lastPromptPersonalization, twitterActivity } =
+        await chrome.storage.local.get(['lastPromptPersonalization', 'twitterActivity']);
+    if (lastPromptPersonalization && Date.now() - lastPromptPersonalization < PERSONALIZATION_INTERVAL_MS) {
+        return;
+    }
+
+    const activity = twitterActivity || {};
+    const liked = activity.liked || [];
+    const disliked = [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])];
+    if (liked.length + disliked.length < PERSONALIZATION_MIN_EXAMPLES) {
+        console.log('[Forcefield BG] Personalization skipped: not enough Twitter activity yet.');
+        return;
+    }
+
+    const { anthropicApiKey, customSystemPrompt } =
+        await chrome.storage.sync.get(['anthropicApiKey', 'customSystemPrompt']);
+    if (!anthropicApiKey) {
+        console.log('[Forcefield BG] Personalization skipped: no Anthropic key (personalization uses Haiku).');
+        return;
+    }
+
+    // Stamp BEFORE calling so a failing run retries tomorrow, not on every scan.
+    await chrome.storage.local.set({ lastPromptPersonalization: Date.now() });
+
+    const currentPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
+    const fmt = (list) => list.slice(-15)
+        .map(e => `- ${(e.handle || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+        .join('\n');
+
+    const metaSystem = `You refine a content-filter prompt for another AI. That AI reads social feeds and wraps statements to hide in <Negative> tags. You will receive its current system prompt plus two lists drawn from the user's real Twitter behavior: tweets they LIKED (the filter must NOT flag content like this) and tweets they marked not-interested / muted / blocked (the filter SHOULD flag content like this). Rewrite the system prompt so its criteria better match this user's actual taste. You MUST preserve the exact output format instructions (<Negative> tags, no extra text, single statements only) and keep the prompt roughly the same length. Return ONLY the new system prompt, nothing else.`;
+
+    const metaUser = `Current system prompt:\n---\n${currentPrompt}\n---\n\nTweets the user LIKED (do NOT block content like this):\n${fmt(liked) || '(none)'}\n\nTweets the user marked not interested / muted / blocked (DO block content like this):\n${fmt(disliked) || '(none)'}`;
+
+    console.log(`[Forcefield BG] Personalizing system prompt from ${liked.length} liked / ${disliked.length} disliked tweets via ${PERSONALIZATION_MODEL}...`);
+    try {
+        const newPrompt = (await callLLM({
+            model: PERSONALIZATION_MODEL,
+            system: metaSystem,
+            userText: metaUser,
+            maxTokens: 4096,
+            anthropicApiKey: anthropicApiKey
+        })).trim();
+
+        // Sanity gate: must still instruct the tagging format, or we discard it.
+        if (newPrompt.length > 100 && newPrompt.includes('<Negative>')) {
+            await chrome.storage.sync.set({ customSystemPrompt: newPrompt });
+            console.log('[Forcefield BG] Personalized system prompt saved.');
+            chrome.notifications.create({
+                type: 'basic',
+                iconUrl: 'icons/icon128.png',
+                title: 'Forcefield personalized',
+                message: 'The filter prompt was tuned to your recent likes and mutes. Review it in the popup if curious.'
+            });
+        } else {
+            console.warn('[Forcefield BG] Personalization output failed the format check; keeping the current prompt.');
+        }
+    } catch (error) {
+        console.warn('[Forcefield BG] Personalization failed (will retry after 24h):', error.message);
+    }
+}
+// --- End personalization --------------------------------------------------
+
 async function handleStartScan(tabId) {
     console.log(`[Forcefield BG] Handling start scan for tab ${tabId}`);
+    // Fire-and-forget: once a day, tune the prompt to the user's Twitter activity.
+    maybePersonalizePrompt().catch(e => console.warn('[Forcefield BG] Personalization error:', e));
     // When starting, first stop any previously active scan
     const { activeScanTabId } = await chrome.storage.local.get(['activeScanTabId']);
     if (activeScanTabId && activeScanTabId !== tabId) {

@@ -18,6 +18,60 @@ const AVAILABLE_AI_MODELS = {
 };
 const DEFAULT_AI_MODEL = 'claude-haiku-4-5';
 
+// --- Cost guard ---------------------------------------------------------
+// USD per million tokens (July 2026). Cache reads bill ~0.1x input, cache
+// writes 1.25x — recordSpend applies those multipliers from response usage.
+const MODEL_PRICING = {
+    'claude-haiku-4-5':       { input: 1.00,  output: 5.00 },
+    'claude-sonnet-4-6':      { input: 3.00,  output: 15.00 },
+    'claude-opus-4-8':        { input: 5.00,  output: 25.00 },
+    'gemini-2.5-flash-lite':  { input: 0.10,  output: 0.40 },
+    'gemini-3.1-flash-lite':  { input: 0.25,  output: 1.50 }
+};
+const DEFAULT_SPEND_LIMITS = { hourly: 1.00, daily: 2.00 }; // USD
+
+// Rolling 24h spend log lives in chrome.storage.local under 'aiSpendLog'
+// as [{ts, cost}]. Pruned on every read.
+async function getSpendState() {
+    const { aiSpendLog } = await chrome.storage.local.get(['aiSpendLog']);
+    const now = Date.now();
+    const log = (aiSpendLog || []).filter(e => now - e.ts < 24 * 3600 * 1000);
+    const hourSpend = log.filter(e => now - e.ts < 3600 * 1000).reduce((s, e) => s + e.cost, 0);
+    const daySpend = log.reduce((s, e) => s + e.cost, 0);
+    return { log, hourSpend, daySpend };
+}
+
+async function getSpendLimits() {
+    const { spendLimits } = await chrome.storage.sync.get(['spendLimits']);
+    return Object.assign({}, DEFAULT_SPEND_LIMITS, spendLimits || {});
+}
+
+// Throws (blocking the call) once the accumulated spend reaches a limit.
+// Enforcement is on past spend, so a single call can overshoot slightly.
+async function enforceBudget() {
+    const [{ hourSpend, daySpend }, limits] = await Promise.all([getSpendState(), getSpendLimits()]);
+    if (daySpend >= limits.daily) {
+        throw new Error(`AI budget: daily limit reached ($${daySpend.toFixed(2)} of $${limits.daily.toFixed(2)}). Scanning pauses until older calls age out of the 24h window.`);
+    }
+    if (hourSpend >= limits.hourly) {
+        throw new Error(`AI budget: hourly limit reached ($${hourSpend.toFixed(2)} of $${limits.hourly.toFixed(2)}). Scanning resumes within the hour.`);
+    }
+}
+
+async function recordSpend(model, usage) {
+    const pricing = MODEL_PRICING[model];
+    if (!pricing || !usage) return;
+    const effectiveInputTokens =
+        (usage.input || 0) +
+        1.25 * (usage.cacheWrite || 0) +
+        0.10 * (usage.cacheRead || 0);
+    const cost = (effectiveInputTokens * pricing.input + (usage.output || 0) * pricing.output) / 1e6;
+    const { log } = await getSpendState();
+    log.push({ ts: Date.now(), cost: cost });
+    await chrome.storage.local.set({ aiSpendLog: log });
+}
+// --- End cost guard ------------------------------------------------------
+
 function providerForModel(model) {
     return (model && model.indexOf('gemini') === 0) ? 'google' : 'anthropic';
 }
@@ -32,12 +86,22 @@ async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApi
         model = DEFAULT_AI_MODEL;
     }
     const provider = providerForModel(model);
+
+    // Cost guard: refuse the call once the hourly/daily budget is spent.
+    await enforceBudget();
+
+    let result;
     if (provider === 'google') {
         if (!geminiApiKey) throw new Error('Gemini API key is not set.');
-        return callGemini({ model, system, userText, maxTokens, geminiApiKey });
+        result = await callGemini({ model, system, userText, maxTokens, geminiApiKey });
+    } else {
+        if (!anthropicApiKey) throw new Error('Anthropic API key is not set.');
+        result = await callAnthropic({ model, system, userText, maxTokens, anthropicApiKey, cacheSystem });
     }
-    if (!anthropicApiKey) throw new Error('Anthropic API key is not set.');
-    return callAnthropic({ model, system, userText, maxTokens, anthropicApiKey, cacheSystem });
+    // Record actual spend from the response's usage metadata (fire-and-forget;
+    // a failed write should never fail the call itself).
+    recordSpend(model, result.usage).catch(e => console.warn('[Forcefield] Failed to record AI spend:', e));
+    return result.text;
 }
 
 async function callAnthropic({ model, system, userText, maxTokens, anthropicApiKey, cacheSystem }) {
@@ -77,7 +141,16 @@ async function callAnthropic({ model, system, userText, maxTokens, anthropicApiK
 
     const result = await response.json();
     const textBlock = (result.content || []).find(b => b.type === 'text');
-    return textBlock ? textBlock.text : '';
+    const u = result.usage || {};
+    return {
+        text: textBlock ? textBlock.text : '',
+        usage: {
+            input: u.input_tokens || 0,
+            output: u.output_tokens || 0,
+            cacheWrite: u.cache_creation_input_tokens || 0,
+            cacheRead: u.cache_read_input_tokens || 0
+        }
+    };
 }
 
 async function callGemini({ model, system, userText, maxTokens, geminiApiKey }) {
@@ -113,12 +186,39 @@ async function callGemini({ model, system, userText, maxTokens, geminiApiKey }) 
     const result = await response.json();
     const candidate = result.candidates && result.candidates[0];
     const parts = (candidate && candidate.content && candidate.content.parts) || [];
-    return parts.map(p => p.text || '').join('');
+    const u = result.usageMetadata || {};
+    return {
+        text: parts.map(p => p.text || '').join(''),
+        usage: {
+            input: u.promptTokenCount || 0,
+            output: (u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0),
+            cacheWrite: 0,
+            cacheRead: u.cachedContentTokenCount || 0
+        }
+    };
+}
+
+// Parse <Negative>...</Negative> tags out of a model response. Shared by the
+// service worker and the popup (both used to carry identical copies).
+function extractNegativeTags(text) {
+    const regex = /<Negative>(.*?)<\/Negative>/gs;
+    const matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const suggestion = match[1].trim();
+        if (suggestion) {
+            matches.push(suggestion);
+        }
+    }
+    return matches;
 }
 
 // Belt-and-suspenders export (top-level declarations are already visible to
 // other classic scripts in the same realm; this just makes the surface explicit).
-self.ForcefieldLLM = { AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM };
+self.ForcefieldLLM = {
+    AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
+    extractNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING
+};
 
 // --- Default prompts (single source of truth for the service worker and the popup) ---
 const DEFAULT_SYSTEM_PROMPT = `Your task is to identify:
