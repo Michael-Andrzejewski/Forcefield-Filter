@@ -261,6 +261,48 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     const allElements = document.body.getElementsByTagName('*');
     let elementsAffected = 0;
 
+    // Does this post have X's thread-connector line running DOWN to a reply?
+    // Detected geometrically (a thin vertical element below the avatar, in the
+    // avatar's column) so it survives X's class-name churn and works in both
+    // light and dark themes.
+    function hasThreadConnectorBelow(article) {
+        const avatar = article.querySelector('[data-testid="Tweet-User-Avatar"]');
+        if (!avatar) return false;
+        const a = avatar.getBoundingClientRect();
+        if (a.width === 0 || a.height === 0) return false; // not rendered / hidden
+        const centerX = (a.left + a.right) / 2;
+        for (const el of article.querySelectorAll('div')) {
+            const r = el.getBoundingClientRect();
+            if (r.width > 0 && r.width <= 6 &&      // thin...
+                r.height >= 12 &&                    // ...vertical line
+                r.top >= a.bottom - 2 &&             // below the avatar
+                Math.abs((r.left + r.right) / 2 - centerX) <= 6) { // in its column
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The timeline cell visually below `cellEl`. X's virtualizer positions
+    // cells with translateY and recycles DOM nodes, so sibling order in the
+    // DOM does NOT match what's on screen — compare rendered positions.
+    function visuallyNextCell(cellEl) {
+        const container = cellEl.parentElement;
+        if (!container) return null;
+        const myTop = cellEl.getBoundingClientRect().top;
+        let best = null;
+        let bestTop = Infinity;
+        for (const c of container.children) {
+            if (c === cellEl || !c.matches || !c.matches('[data-testid="cellInnerDiv"]')) continue;
+            const t = c.getBoundingClientRect().top;
+            if (t > myTop && t < bestTop) {
+                bestTop = t;
+                best = c;
+            }
+        }
+        return best;
+    }
+
     // Apply the active mode (highlight / whitebox / hide) to one element.
     // Shared by the direct match and its same-cell reply siblings.
     function applyTreatment(elementToHide) {
@@ -410,17 +452,45 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
             }
 
             if (elementToHide && elementToHide !== document.body && elementToHide !== document.documentElement) {
-                applyTreatment(elementToHide);
+                // Compute ALL targets before applying anything: hiding an
+                // element collapses its rects, which would break the
+                // thread-connector geometry checks below.
+                const targets = [elementToHide];
+
                 // Replies rendered in the same timeline cell as a blocked post
-                // get the same treatment (X shows "post + reply" thread units
-                // inside one cellInnerDiv).
+                // (X's "post + reply" units inside one cellInnerDiv).
                 const cell = elementToHide.closest ? elementToHide.closest('[data-testid="cellInnerDiv"]') : null;
                 if (cell) {
                     for (const sibling of cell.querySelectorAll('article')) {
                         if (sibling !== elementToHide && !sibling.contains(elementToHide) && !elementToHide.contains(sibling)) {
-                            applyTreatment(sibling);
+                            targets.push(sibling);
                         }
                     }
+                    // Cross-cell thread propagation: X joins a post to its
+                    // replies with a thin vertical connector line under the
+                    // avatar. While the current post has that connector, the
+                    // VISUALLY next cell's post is a reply in the same thread.
+                    // (Visual order, not DOM order — X's virtualizer positions
+                    // cells with translateY and recycles them out of order.)
+                    let currentCell = cell;
+                    let currentArticle = elementToHide.closest('article') || elementToHide;
+                    let guard = 0;
+                    while (guard++ < 10 && currentArticle && hasThreadConnectorBelow(currentArticle)) {
+                        const next = visuallyNextCell(currentCell);
+                        if (!next) break;
+                        const nextArticle = next.querySelector('article');
+                        if (!nextArticle) break;
+                        targets.push(nextArticle);
+                        currentCell = next;
+                        currentArticle = nextArticle;
+                    }
+                    if (targets.length > 1) {
+                        console.log(`[Forcefield Content Blocker (from SW)] "${matchedBlockItem.text.slice(0, 50)}" -> also treating ${targets.length - 1} same-thread post(s).`);
+                    }
+                }
+
+                for (const target of targets) {
+                    applyTreatment(target);
                 }
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
                  console.warn(`[Forcefield Content Blocker (from SW)] Avoided affecting BODY/HTML for "${matchedBlockItem.text}".`);
