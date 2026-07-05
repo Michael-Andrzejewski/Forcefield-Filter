@@ -795,6 +795,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             }
             sendResponse({status: "Blocker triggered"});
+        } else if (request.command === "autonomousGetConfig") {
+            sendResponse({ config: AUTONOMOUS_DEFAULTS });
+        } else if (request.command === "autonomousDecide") {
+            try {
+                const decisions = await decideAutonomousActions(request.tweets || []);
+                sendResponse({ decisions: decisions });
+            } catch (e) {
+                // Budget-guard and API errors land here; the agent stops the session.
+                sendResponse({ error: e.message, decisions: [] });
+            }
+        } else if (request.command === "autonomousRunNow") {
+            const result = await startAutonomousRun(request.tabId || null, { fromAlarm: false });
+            sendResponse(result);
+        } else if (request.command === "autonomousStopAll") {
+            await broadcastAutonomousStop();
+            sendResponse({ status: "Stop sent" });
+        } else if (request.command === "autonomousDone") {
+            await handleAutonomousDone(request.summary, sender.tab ? sender.tab.id : null);
+            sendResponse({ status: "ok" });
         } else if (request.command === "refineSystemPrompt") {
             const tabId = sender.tab ? sender.tab.id : null;
             refineSystemPromptWithAI(request.text, tabId)
@@ -899,6 +918,205 @@ async function maybePersonalizePrompt() {
     }
 }
 // --- End personalization --------------------------------------------------
+
+// --- Autonomous curation mode ----------------------------------------------
+// An injected agent (autonomousAgent.js) scrolls the X feed, ships tweet
+// batches here for an LLM verdict, and clicks Mute / Not-interested through
+// X's own menus. Triggered by the popup's Run Now button or a nightly alarm.
+// Spend goes through the same callLLM cost guard as everything else.
+const AUTONOMOUS_DEFAULTS = {
+    maxMutes: 5,             // account-level, so kept deliberately low
+    maxNotInterested: 20,
+    maxTweetsScanned: 150,
+    maxDurationMs: 8 * 60 * 1000,
+    batchSize: 12
+};
+const AUTONOMOUS_ALARM = 'forcefield-autonomous-nightly';
+let autonomousAlarmTabId = null; // tab we opened ourselves at midnight (closed when done)
+
+async function decideAutonomousActions(tweets) {
+    if (!tweets.length) return [];
+    const { anthropicApiKey, geminiApiKey, selectedAiModel, customSystemPrompt } =
+        await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'selectedAiModel', 'customSystemPrompt']);
+    const { twitterActivity } = await chrome.storage.local.get(['twitterActivity']);
+
+    const activity = twitterActivity || {};
+    const fmtTaste = (list) => (list || []).slice(-10)
+        .map(e => `- ${(e.handle || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 150)}`)
+        .join('\n') || '(no examples yet)';
+
+    const system = `You are a careful feed curator acting on a user's behalf on X/Twitter while they sleep. For each numbered post, pick exactly one action:
+- "mute": the ACCOUNT is a net negative for this user (rage-bait, engagement-bait, spam, outrage farming, or content squarely matching what they filter out). Muting hides ALL future posts from that account, so only choose it when the post strongly suggests the whole account is like this. It is reversible but expensive to review, so be sparing.
+- "not_interested": this specific post's topic or style is something the user does not want more of; this gently trains their algorithm.
+- "none": the user might plausibly want to see it. When in doubt, choose "none".
+Never block, never report - those options do not exist for you.
+Respond with ONLY a JSON array, one entry per post, no other text:
+[{"index": 0, "action": "mute" | "not_interested" | "none", "reason": "<10 words max>"}]`;
+
+    const filterCriteria = customSystemPrompt || (self.ForcefieldLLM && self.ForcefieldLLM.DEFAULT_SYSTEM_PROMPT) || '';
+    const userText = `What this user's toxicity filter targets (their filter prompt):
+---
+${filterCriteria.slice(0, 2000)}
+---
+
+Posts the user LIKED recently (they want content like this - lean "none"):
+${fmtTaste(activity.liked)}
+
+Posts the user marked not-interested / muted / blocked (they dislike content like this):
+${fmtTaste([...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])])}
+
+Posts to judge:
+${tweets.map((t, i) => `${i}. ${t.handle}: ${t.text}`).join('\n')}`;
+
+    const raw = await callLLM({
+        model: selectedAiModel || DEFAULT_AI_MODEL,
+        system: system,
+        userText: userText,
+        maxTokens: 2048,
+        anthropicApiKey: anthropicApiKey,
+        geminiApiKey: geminiApiKey
+    });
+
+    // Extract the first JSON array in the response and keep only valid entries.
+    const start = raw.indexOf('[');
+    const end = raw.lastIndexOf(']');
+    if (start === -1 || end <= start) {
+        console.warn('[Forcefield BG] Autonomous decision response had no JSON array:', raw.slice(0, 200));
+        return [];
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw.slice(start, end + 1));
+    } catch (e) {
+        console.warn('[Forcefield BG] Could not parse autonomous decisions:', e.message);
+        return [];
+    }
+    const valid = ['mute', 'not_interested', 'none'];
+    return (Array.isArray(parsed) ? parsed : [])
+        .filter(d => d && Number.isInteger(d.index) && d.index >= 0 && d.index < tweets.length && valid.includes(d.action))
+        .map(d => ({ index: d.index, action: d.action, reason: String(d.reason || '').slice(0, 120) }));
+}
+
+function isXUrl(url) {
+    try {
+        const h = new URL(url).hostname;
+        return h === 'x.com' || h.endsWith('.x.com') || h === 'twitter.com' || h.endsWith('.twitter.com');
+    } catch (e) {
+        return false;
+    }
+}
+
+// Find or open an x.com tab, wait for it to load, then inject the agent.
+async function startAutonomousRun(preferredTabId, { fromAlarm }) {
+    let tab = null;
+    if (preferredTabId) {
+        try {
+            const t = await chrome.tabs.get(preferredTabId);
+            if (t && isXUrl(t.url)) tab = t;
+        } catch (e) { /* tab gone; fall through */ }
+    }
+    if (!tab) {
+        const xTabs = await chrome.tabs.query({ url: ['https://x.com/*', 'https://*.x.com/*', 'https://twitter.com/*', 'https://*.twitter.com/*'] });
+        tab = xTabs[0] || null;
+        if (tab && !fromAlarm) {
+            await chrome.tabs.update(tab.id, { active: true });
+        }
+    }
+    if (!tab) {
+        tab = await chrome.tabs.create({ url: 'https://x.com/home', active: !fromAlarm });
+        if (fromAlarm) autonomousAlarmTabId = tab.id;
+        const loaded = await waitForTabComplete(tab.id, 30000);
+        if (!loaded) return { error: 'x.com did not finish loading within 30s' };
+        // Give X's SPA a moment to render the timeline after "complete".
+        await new Promise(r => setTimeout(r, 4000));
+    }
+    try {
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['autonomousAgent.js'] });
+        console.log(`[Forcefield BG] Autonomous session started in tab ${tab.id}${fromAlarm ? ' (nightly alarm)' : ''}.`);
+        return { status: 'started', tabId: tab.id };
+    } catch (e) {
+        console.error('[Forcefield BG] Failed to inject autonomous agent:', e);
+        return { error: e.message };
+    }
+}
+
+function waitForTabComplete(tabId, timeoutMs) {
+    return new Promise((resolve) => {
+        const timer = setTimeout(() => { cleanup(); resolve(false); }, timeoutMs);
+        function onUpdated(updatedTabId, changeInfo) {
+            if (updatedTabId === tabId && changeInfo.status === 'complete') {
+                cleanup();
+                resolve(true);
+            }
+        }
+        function cleanup() {
+            clearTimeout(timer);
+            chrome.tabs.onUpdated.removeListener(onUpdated);
+        }
+        chrome.tabs.onUpdated.addListener(onUpdated);
+        // It may already be complete by the time we start listening.
+        chrome.tabs.get(tabId).then(t => {
+            if (t && t.status === 'complete') { cleanup(); resolve(true); }
+        }).catch(() => { cleanup(); resolve(false); });
+    });
+}
+
+async function broadcastAutonomousStop() {
+    const xTabs = await chrome.tabs.query({ url: ['https://x.com/*', 'https://*.x.com/*', 'https://twitter.com/*', 'https://*.twitter.com/*'] });
+    for (const tab of xTabs) {
+        chrome.tabs.sendMessage(tab.id, { command: 'autonomousStop' }).catch(() => {});
+    }
+}
+
+async function handleAutonomousDone(summary, tabId) {
+    if (!summary) return;
+    await chrome.storage.local.set({ lastAutonomousRun: summary });
+    const msg = `Muted ${summary.muted.length}, not-interested ${summary.notInterested.length} ` +
+        `(scanned ${summary.scanned} posts). Reason: ${summary.reason}`;
+    console.log('[Forcefield BG] Autonomous session finished:', msg);
+    chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'icons/icon128.png',
+        title: 'Forcefield autonomous run finished',
+        message: msg
+    });
+    // Only close the tab if WE opened it for the nightly run.
+    if (tabId && tabId === autonomousAlarmTabId) {
+        autonomousAlarmTabId = null;
+        setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 10000);
+    }
+}
+
+async function scheduleAutonomousAlarm() {
+    const { autonomousNightly } = await chrome.storage.sync.get(['autonomousNightly']);
+    if (autonomousNightly) {
+        const next = new Date();
+        next.setHours(24, 0, 0, 0); // upcoming midnight, local time
+        chrome.alarms.create(AUTONOMOUS_ALARM, { when: next.getTime(), periodInMinutes: 24 * 60 });
+        console.log(`[Forcefield BG] Nightly autonomous run scheduled for ${next.toLocaleString()}.`);
+    } else {
+        chrome.alarms.clear(AUTONOMOUS_ALARM);
+    }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === AUTONOMOUS_ALARM) {
+        console.log('[Forcefield BG] Midnight alarm fired; starting autonomous run.');
+        startAutonomousRun(null, { fromAlarm: true })
+            .catch(e => console.error('[Forcefield BG] Nightly autonomous run failed to start:', e));
+    }
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.autonomousNightly) {
+        scheduleAutonomousAlarm();
+    }
+});
+
+// (Re)schedule whenever the service worker wakes up - alarms survive SW
+// suspension, but this also covers first install and browser restarts.
+scheduleAutonomousAlarm().catch(e => console.warn('[Forcefield BG] Could not schedule autonomous alarm:', e));
+// --- End autonomous curation mode -------------------------------------------
 
 async function handleStartScan(tabId) {
     console.log(`[Forcefield BG] Handling start scan for tab ${tabId}`);

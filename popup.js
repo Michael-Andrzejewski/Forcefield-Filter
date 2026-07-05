@@ -65,6 +65,77 @@ document.addEventListener('DOMContentLoaded', () => {
     setupCollapsibleSections(); // Setup collapsible sections
     renderTwitterActivity(); // Twitter like/mute/block/not-interested log
     loadSpendInfo(); // AI spend counters + budget limit inputs
+    loadAutonomousUI(); // Autonomous curation: nightly toggle + last-run summary
+});
+
+// --- Autonomous curation (Run Now button, nightly toggle, last-run summary) ---
+const runAutonomousButton = document.getElementById('runAutonomousButton');
+const stopAutonomousButton = document.getElementById('stopAutonomousButton');
+const autonomousNightlyCheckbox = document.getElementById('autonomousNightlyCheckbox');
+
+function renderAutonomousLastRun(summary) {
+    const el = document.getElementById('autonomousLastRun');
+    if (!el) return;
+    if (!summary) {
+        el.textContent = 'No autonomous runs yet.';
+        return;
+    }
+    const when = new Date(summary.when).toLocaleString();
+    let text = `Last run ${when}: muted ${summary.muted.length}, not-interested ${summary.notInterested.length}, scanned ${summary.scanned} posts (${summary.reason}).`;
+    const names = summary.muted.map(m => m.handle).filter(Boolean);
+    if (names.length) text += `\nMuted: ${names.join(', ')}`;
+    el.textContent = text;
+}
+
+function loadAutonomousUI() {
+    chrome.storage.sync.get(['autonomousNightly'], (res) => {
+        if (autonomousNightlyCheckbox) autonomousNightlyCheckbox.checked = !!res.autonomousNightly;
+    });
+    chrome.storage.local.get(['lastAutonomousRun'], (res) => {
+        renderAutonomousLastRun(res.lastAutonomousRun);
+    });
+}
+
+if (runAutonomousButton) {
+    runAutonomousButton.addEventListener('click', () => {
+        runAutonomousButton.textContent = 'Starting...';
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const tabId = tabs[0] ? tabs[0].id : null;
+            // The background finds/opens the x.com tab and injects the agent;
+            // the popup closes itself when that tab takes focus.
+            chrome.runtime.sendMessage({ command: 'autonomousRunNow', tabId: tabId }, (resp) => {
+                if (resp && resp.error) {
+                    runAutonomousButton.textContent = 'Run Now & Watch';
+                    alert('Could not start: ' + resp.error);
+                } else {
+                    window.close();
+                }
+            });
+        });
+    });
+}
+
+if (stopAutonomousButton) {
+    stopAutonomousButton.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ command: 'autonomousStopAll' }, () => {
+            stopAutonomousButton.textContent = 'Stop Sent';
+            setTimeout(() => { stopAutonomousButton.textContent = 'Stop Session'; }, 1500);
+        });
+    });
+}
+
+if (autonomousNightlyCheckbox) {
+    autonomousNightlyCheckbox.addEventListener('change', () => {
+        chrome.storage.sync.set({ autonomousNightly: autonomousNightlyCheckbox.checked }, () => {
+            console.log(`[Forcefield Popup] Nightly autonomous mode ${autonomousNightlyCheckbox.checked ? 'enabled' : 'disabled'}.`);
+        });
+    });
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.lastAutonomousRun) {
+        renderAutonomousLastRun(changes.lastAutonomousRun.newValue);
+    }
 });
 
 // --- AI Budget (spend counters + limits) ---

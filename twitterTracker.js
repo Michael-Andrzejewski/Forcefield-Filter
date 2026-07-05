@@ -86,6 +86,11 @@
     }
 
     document.addEventListener('click', (e) => {
+        // Only record HUMAN actions. The autonomous agent clicks these same
+        // menus synthetically (isTrusted=false); letting those into the
+        // activity log would feed the AI's own decisions back into prompt
+        // personalization as if the user made them.
+        if (!e.isTrusted) return;
         const target = e.target;
         if (!target || !target.closest) return;
 
