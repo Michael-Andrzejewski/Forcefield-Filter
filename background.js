@@ -824,6 +824,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 // Budget-guard and API errors land here; the agent stops the session.
                 sendResponse({ error: e.message, decisions: [] });
             }
+        } else if (request.command === "getTasteProfile") {
+            // Popup opening: report the profile plus the counts behind it, so
+            // the UI can explain an empty profile instead of showing nothing.
+            const { tasteSummary, tasteNewChars, twitterActivity } =
+                await chrome.storage.local.get(['tasteSummary', 'tasteNewChars', 'twitterActivity']);
+            const activity = twitterActivity || {};
+            sendResponse({
+                summary: tasteSummary || null,
+                placeholder: TASTE_SUMMARY_PLACEHOLDER,
+                likedCount: (activity.liked || []).length,
+                dislikedCount: dislikedActivityOf(activity).length,
+                newChars: tasteNewChars || 0,
+                triggerChars: TASTE_SUMMARY_TRIGGER_CHARS,
+                minExamples: TASTE_SUMMARY_MIN_EXAMPLES
+            });
+        } else if (request.command === "regenerateTasteProfile") {
+            const result = await updateTasteSummary({ force: true });
+            sendResponse(result);
+        } else if (request.command === "saveTasteProfile") {
+            // Hand-edited profile. Stored the same way a generated one is, so
+            // scans pick it up immediately; edited:true keeps it labelled.
+            const text = (request.text || '').trim();
+            if (!text) {
+                await chrome.storage.local.remove('tasteSummary');
+                sendResponse({ status: 'cleared' });
+            } else {
+                await chrome.storage.local.set({
+                    tasteSummary: { text: text, updatedAt: Date.now(), edited: true }
+                });
+                sendResponse({ status: 'saved' });
+            }
         } else if (request.command === "autonomousRunNow") {
             const result = await startAutonomousRun(request.tabId || null, { fromAlarm: false });
             sendResponse(result);
@@ -920,7 +951,10 @@ async function getTasteContext() {
     const disliked = dislikedActivityOf(activity);
     if (!(tasteSummary && tasteSummary.text) && liked.length + disliked.length === 0) return '';
 
-    const parts = ["This user's taste profile, learned from their own activity on this account:"];
+    // The directive lives inside this block rather than only in the default
+    // system prompt, so the profile is still honoured by users whose saved
+    // custom prompt predates the feature.
+    const parts = ["This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes."];
     parts.push('---\n' + ((tasteSummary && tasteSummary.text) || TASTE_SUMMARY_PLACEHOLDER) + '\n---');
     if (liked.length > 0) {
         parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED (do NOT flag content like this):\n` +
@@ -933,24 +967,36 @@ async function getTasteContext() {
     return parts.join('\n\n');
 }
 
-async function maybeUpdateTasteSummary() {
+// Returns {status, message} so the popup can explain what happened instead of
+// leaving the user guessing. status: 'updated' | 'skipped' | 'error'.
+// force: true bypasses the new-activity threshold (the popup's Regenerate button).
+async function updateTasteSummary({ force } = { force: false }) {
     const { tasteSummary, tasteNewChars, twitterActivity } =
         await chrome.storage.local.get(['tasteSummary', 'tasteNewChars', 'twitterActivity']);
     const activity = twitterActivity || {};
     const liked = activity.liked || [];
     const disliked = dislikedActivityOf(activity);
-    if (liked.length + disliked.length < TASTE_SUMMARY_MIN_EXAMPLES) return;
+    const total = liked.length + disliked.length;
+    if (total < TASTE_SUMMARY_MIN_EXAMPLES) {
+        return {
+            status: 'skipped',
+            message: `Needs at least ${TASTE_SUMMARY_MIN_EXAMPLES} logged actions to build a profile. You have ${total}. Like, mute, or mark posts not interested on X and they'll be recorded here.`
+        };
+    }
 
     const hasSummary = !!(tasteSummary && tasteSummary.text);
-    if (hasSummary && (tasteNewChars || 0) < TASTE_SUMMARY_TRIGGER_CHARS) return;
+    if (!force && hasSummary && (tasteNewChars || 0) < TASTE_SUMMARY_TRIGGER_CHARS) {
+        return { status: 'skipped', message: 'Not enough new activity since the last update yet.' };
+    }
 
     const { anthropicApiKey, geminiApiKey, selectedAiModel } =
         await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'selectedAiModel']);
     const model = selectedAiModel || DEFAULT_AI_MODEL;
     const keyForProvider = providerForModel(model) === 'google' ? geminiApiKey : anthropicApiKey;
     if (!keyForProvider) {
+        const label = providerForModel(model) === 'google' ? 'Gemini' : 'Anthropic';
         console.log('[Forcefield BG] Taste summary skipped: no API key for the selected model.');
-        return;
+        return { status: 'skipped', message: `No ${label} API key set. Add one under API Keys.` };
     }
 
     // Reset the counter BEFORE calling, so a failed run retries only after
@@ -998,21 +1044,26 @@ Replace the parenthesized placeholders with real observations, using several bul
             text.includes("summary of the user's dislikes");
         if (!hasStructure) {
             console.warn('[Forcefield BG] Taste summary discarded: missing the two required section headers.');
-        } else if (words >= 250 && words <= 1200) {
-            await chrome.storage.local.set({
-                tasteSummary: {
-                    text: text,
-                    updatedAt: Date.now(),
-                    likedCount: liked.length,
-                    dislikedCount: disliked.length
-                }
-            });
-            console.log(`[Forcefield BG] Taste summary saved (${words} words).`);
-        } else {
-            console.warn(`[Forcefield BG] Taste summary discarded: ${words} words is outside the 300-1000 target.`);
+            return { status: 'error', message: 'The model returned an unusable profile (wrong structure). Kept the previous one.' };
         }
+        if (words < 250 || words > 1200) {
+            console.warn(`[Forcefield BG] Taste summary discarded: ${words} words is outside the 300-1000 target.`);
+            return { status: 'error', message: `The model returned ${words} words, outside the 300-1000 target. Kept the previous profile.` };
+        }
+        await chrome.storage.local.set({
+            tasteSummary: {
+                text: text,
+                updatedAt: Date.now(),
+                likedCount: liked.length,
+                dislikedCount: disliked.length,
+                edited: false
+            }
+        });
+        console.log(`[Forcefield BG] Taste summary saved (${words} words).`);
+        return { status: 'updated', message: `Profile updated from ${liked.length} liked and ${disliked.length} disliked posts.` };
     } catch (error) {
         console.warn('[Forcefield BG] Taste summary generation failed:', error.message);
+        return { status: 'error', message: error.message };
     }
 }
 // --- End taste profile ------------------------------------------------------
@@ -1102,7 +1153,7 @@ async function startAutonomousRun(preferredTabId, { fromAlarm } = { fromAlarm: f
     // Refresh the taste summary first if enough new activity accumulated, so
     // this session's decisions use it (fire-and-forget; decisions fall back
     // to the previous summary if generation is still in flight).
-    maybeUpdateTasteSummary().catch(e => console.warn('[Forcefield BG] Taste summary error:', e));
+    updateTasteSummary().catch(e => console.warn("[Forcefield BG] Taste summary error:", e));
     let tab = null;
     if (preferredTabId) {
         try {
@@ -1222,7 +1273,7 @@ async function handleStartScan(tabId) {
     console.log(`[Forcefield BG] Handling start scan for tab ${tabId}`);
     // Fire-and-forget: regenerate the taste summary if enough new activity
     // has accumulated (or none exists yet).
-    maybeUpdateTasteSummary().catch(e => console.warn('[Forcefield BG] Taste summary error:', e));
+    updateTasteSummary().catch(e => console.warn("[Forcefield BG] Taste summary error:", e));
     // When starting, first stop any previously active scan
     const { activeScanTabId } = await chrome.storage.local.get(['activeScanTabId']);
     if (activeScanTabId && activeScanTabId !== tabId) {

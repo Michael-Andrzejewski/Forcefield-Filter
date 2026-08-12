@@ -50,7 +50,11 @@ Scanning sends text to a paid API, so browsing costs real money (roughly cents p
 
 If you use X/Twitter, Forcefield logs your own likes, not-interested clicks, mutes, and blocks (locally, in extension storage). From that log it maintains a **taste profile**: an LLM-written summary (300 to 1000 words) of what you actually like and dislike. It always keeps a fixed two-section bullet structure (likes that must not be blocked, then dislikes that should be), each covering topics, accounts, tone and discourse quality, and other observations. The profile is generated automatically once enough activity exists and updated incrementally (previous profile plus new activity) after roughly 5000 tokens of new liked or disliked content accumulates.
 
-Every blocking scan and every autonomous decision then receives this profile plus your 5 most recent liked posts and 5 most recent not-interested/muted/blocked posts verbatim, so the filter tracks your current taste without you editing prompts. Your system prompt itself is never modified. You can view, copy, or clear the activity log in the popup at any time. Only human clicks are recorded; the autonomous agent's own actions are excluded.
+Every blocking scan and every autonomous decision then receives this profile plus your 5 most recent liked posts and 5 most recent not-interested/muted/blocked posts verbatim, so the filter tracks your current taste without you editing prompts.
+
+The profile is shown in the popup under **Your Taste Profile**, along with when it was last built and how close it is to the next automatic update. You can **edit it directly** to steer what gets hidden (your edits are used as-is by every scan), or press **Regenerate** to rebuild it from your activity immediately. Clearing the box resets it so it gets rebuilt from scratch.
+
+You can view, copy, or clear the underlying activity log in the popup too. Only human clicks are recorded; the autonomous agent's own actions are excluded.
 
 ## Autonomous curation (experimental, use with care)
 

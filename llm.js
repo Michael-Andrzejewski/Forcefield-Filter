@@ -232,6 +232,8 @@ statements within the provided text content. Ignore common interface elements li
 
 
 
+A taste profile for this specific user follows these instructions, built from posts they liked versus posts they muted or marked not interested. Treat it as the authority on borderline cases: never tag content matching their likes, and lean toward tagging content matching their dislikes, even where the general criteria above are ambiguous.
+
 For each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.
 Do NOT add explanations, apologies, or any text outside the <Negative> tags.
 Do NOT tag entire paragraphs; the blocking tool only works on single sentences without paragraph breaks or quotation marks.
@@ -247,7 +249,7 @@ Example Correct Output:
 <Negative>the characters unrelatable, and enabled lazy cop outs and ex-machinas</Negative>
 <Negative>can you trigger a fan base with one sentence</Negative>`;
 
-const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed:\n\n----\n`;
+const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed. Judge each statement against this user's taste profile as well as the general criteria:\n\n----\n`;
 const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now
 
 Object.assign(self.ForcefieldLLM, { DEFAULT_SYSTEM_PROMPT, DEFAULT_USER_PROMPT_PREFIX, DEFAULT_USER_PROMPT_SUFFIX });

@@ -66,7 +66,79 @@ document.addEventListener('DOMContentLoaded', () => {
     renderTwitterActivity(); // Twitter like/mute/block/not-interested log
     loadSpendInfo(); // AI spend counters + budget limit inputs
     loadAutonomousUI(); // Autonomous curation: nightly toggle + last-run summary
+    loadTasteProfile(); // Taste profile text + status
 });
+
+// --- Taste profile (visible, editable, regenerate on demand) ---
+const tasteProfileText = document.getElementById('tasteProfileText');
+const tasteProfileStatus = document.getElementById('tasteProfileStatus');
+const regenerateTasteButton = document.getElementById('regenerateTasteButton');
+const saveTasteButton = document.getElementById('saveTasteButton');
+
+function setTasteStatus(text) {
+    if (tasteProfileStatus) tasteProfileStatus.textContent = text;
+}
+
+function loadTasteProfile() {
+    if (!tasteProfileText) return;
+    chrome.runtime.sendMessage({ command: 'getTasteProfile' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+            setTasteStatus('Could not load the profile.');
+            return;
+        }
+        // Don't clobber text the user is in the middle of editing.
+        if (document.activeElement !== tasteProfileText) {
+            tasteProfileText.value = (res.summary && res.summary.text) || '';
+        }
+        if (res.summary && res.summary.text) {
+            const when = new Date(res.summary.updatedAt).toLocaleString();
+            const source = res.summary.edited ? 'Edited by you' : 'Generated';
+            const pct = Math.min(100, Math.round((res.newChars / res.triggerChars) * 100));
+            setTasteStatus(`${source} ${when}. From ${res.likedCount} liked / ${res.dislikedCount} disliked posts. Next auto-update at ${pct}% of new activity.`);
+        } else if (res.likedCount + res.dislikedCount < res.minExamples) {
+            tasteProfileText.value = res.placeholder;
+            setTasteStatus(`No profile yet: needs ${res.minExamples} logged actions, you have ${res.likedCount + res.dislikedCount}. Like or mark posts not interested on X, then press Regenerate. (Template shown below.)`);
+        } else {
+            tasteProfileText.value = res.placeholder;
+            setTasteStatus(`No profile yet, but you have ${res.likedCount + res.dislikedCount} logged actions. Press Regenerate to build one now. (Template shown below.)`);
+        }
+    });
+}
+
+if (regenerateTasteButton) {
+    regenerateTasteButton.addEventListener('click', () => {
+        regenerateTasteButton.disabled = true;
+        regenerateTasteButton.textContent = 'Working…';
+        setTasteStatus('Asking the AI to rebuild your profile from your activity…');
+        chrome.runtime.sendMessage({ command: 'regenerateTasteProfile' }, (res) => {
+            regenerateTasteButton.disabled = false;
+            regenerateTasteButton.textContent = 'Regenerate';
+            if (chrome.runtime.lastError || !res) {
+                setTasteStatus('Regeneration failed: no response from the extension.');
+                return;
+            }
+            if (res.status === 'updated') {
+                loadTasteProfile();
+            } else {
+                setTasteStatus(res.message || 'Nothing to update.');
+            }
+        });
+    });
+}
+
+if (saveTasteButton) {
+    saveTasteButton.addEventListener('click', () => {
+        chrome.runtime.sendMessage({ command: 'saveTasteProfile', text: tasteProfileText.value }, (res) => {
+            if (chrome.runtime.lastError || !res) {
+                setTasteStatus('Save failed.');
+                return;
+            }
+            setTasteStatus(res.status === 'cleared'
+                ? 'Profile cleared. It will be rebuilt from your activity on the next scan.'
+                : 'Saved. Your edits are now used by every scan.');
+        });
+    });
+}
 
 // --- Autonomous curation (Run Now button, last-run summary) ---
 const runAutonomousButton = document.getElementById('runAutonomousButton');
@@ -320,6 +392,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
     if (area === 'local' && changes.aiSpendLog) {
         loadSpendInfo();
+    }
+    if (area === 'local' && changes.tasteSummary) {
+        loadTasteProfile();
     }
 });
 
