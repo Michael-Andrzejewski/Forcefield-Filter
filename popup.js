@@ -68,10 +68,11 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAutonomousUI(); // Autonomous curation: nightly toggle + last-run summary
 });
 
-// --- Autonomous curation (Run Now button, nightly toggle, last-run summary) ---
+// --- Autonomous curation (Run Now button, last-run summary) ---
+// The nightly-at-midnight toggle was removed: unattended automated sessions
+// were triggering X's human verification challenges. Supervised runs only.
 const runAutonomousButton = document.getElementById('runAutonomousButton');
 const stopAutonomousButton = document.getElementById('stopAutonomousButton');
-const autonomousNightlyCheckbox = document.getElementById('autonomousNightlyCheckbox');
 
 function renderAutonomousLastRun(summary) {
     const el = document.getElementById('autonomousLastRun');
@@ -88,9 +89,6 @@ function renderAutonomousLastRun(summary) {
 }
 
 function loadAutonomousUI() {
-    chrome.storage.sync.get(['autonomousNightly'], (res) => {
-        if (autonomousNightlyCheckbox) autonomousNightlyCheckbox.checked = !!res.autonomousNightly;
-    });
     chrome.storage.local.get(['lastAutonomousRun'], (res) => {
         renderAutonomousLastRun(res.lastAutonomousRun);
     });
@@ -120,14 +118,6 @@ if (stopAutonomousButton) {
         chrome.runtime.sendMessage({ command: 'autonomousStopAll' }, () => {
             stopAutonomousButton.textContent = 'Stop Sent';
             setTimeout(() => { stopAutonomousButton.textContent = 'Stop Session'; }, 1500);
-        });
-    });
-}
-
-if (autonomousNightlyCheckbox) {
-    autonomousNightlyCheckbox.addEventListener('change', () => {
-        chrome.storage.sync.set({ autonomousNightly: autonomousNightlyCheckbox.checked }, () => {
-            console.log(`[Forcefield Popup] Nightly autonomous mode ${autonomousNightlyCheckbox.checked ? 'enabled' : 'disabled'}.`);
         });
     });
 }
