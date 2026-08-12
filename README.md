@@ -1,22 +1,87 @@
-Welcome to Forcefield! This is my experimental attempt to filter all incoming internet text traffic through an LLM.
-Forcefield is based on the following philosophies:
-- People are naturally good and happy by default! Most value is lost by adding bad content to their feed
-- People are often subconsciously drawn to content they don't consciously like. The average person will engage more with a post that is wrong than with a post that is right. Attention is a subpar optimizer for good content.
-- Superpersuasion happens in the negative. It's hard to persuade something that they like something, but easy to persuade someone that they don't like something.
+# Forcefield
 
-Most importantly:
-- The only way to fix the misaligned incentives of social media networks (attention = ad revenue) is to have a system that alows a person to *consciously* choose what they want to block and have this system constantly work with *no mental effort* cost. You can fix your social media feed by consciously + constantly selecting 'Not Interested' to content you don't want to see, but this will take too much mental effort and eventually you'll give up and go back to doomscrolling.
+A Chrome extension that runs your social media feed through an LLM and blocks toxicity before you see it. Think of it as an ad blocker, but for ragebait, doomposting, and engagement farming.
 
-Forcefield is designed to save you the mental effort.
+Forcefield is built on a few beliefs:
 
-This is version 1, a proof of concept implementation. It's not great. While functional, it has the following known issues:
-- Blocks too much content, including things that shouldn't be blocked.
-- Only blocks text (images will slip through if Forcefield doesn't identify the caption as bad)
-- It's somewhat expensive, at around 1 dollar per hour of browsing.
+- People are naturally good and happy by default. Most value is lost by bad content being added to a feed, not by good content being missing.
+- People are often subconsciously drawn to content they don't consciously like. The average person engages more with a post that is wrong than with one that is right, so attention is a subpar optimizer for good content.
+- Superpersuasion happens in the negative. It's hard to persuade someone that they like something, but easy to persuade someone that they don't.
+- The only way to fix the misaligned incentives of social media (attention = ad revenue) is a system where you *consciously* choose what to block once, and the system then enforces that choice constantly with *no ongoing mental effort*. You can curate your own feed by hand, but it takes too much effort and eventually you give up and go back to doomscrolling.
 
-Roadmap:
-- Finetune a model to make the default blocking behavior much better
-- Add non-LLM filtering systems so the extension can run more cheaply or for free
-- Improve custom filtering (maybe a dial that changes the blocking strictness or allows the user to directly block content with a prompt
+If tools like this were widely used, clickbait and ragebait would stop paying.
+
+## How it works
+
+1. A content script watches the page for new text (on X/Twitter it extracts only tweet bodies and dedupes them, so you aren't billed twice for the same post).
+2. New text is batched and sent to a small, cheap model (Claude Haiku by default) with a filtering prompt.
+3. The model returns the specific statements that match your filter. Those phrases go on a local blocklist.
+4. Matching posts are hidden, replaced with a "Blocked by Forcefield - click to reveal" box, or highlighted, depending on the mode you pick. Blocking also propagates down reply threads.
+
+Everything runs locally in your browser except the LLM call itself, which goes directly from your browser to the provider you configure.
+
+## Install
+
+Forcefield is not on the Chrome Web Store yet. Load it unpacked:
+
+1. Clone or download this repository.
+2. Open `chrome://extensions` in Chrome.
+3. Turn on **Developer mode** (top right).
+4. Click **Load unpacked** and select the repository folder.
+
+## Setup
+
+1. Get an API key. The default model is Claude Haiku, so you'll want an [Anthropic API key](https://platform.claude.com/). Gemini Flash-Lite is also supported with a Google AI key.
+2. Click the Forcefield icon, flip on the **Developer** toggle in the header, open **API Keys**, and paste your key.
+3. Pick a model under **AI Model** (Haiku 4.5 is the cheapest Claude option and the default).
+4. Go to a site on your allowed list (X/Twitter and Quora by default; add others under **Sites to Scan**) and press **Start Scanning**.
+
+Optional tuning, all in Developer mode:
+
+- **AI System Prompt** defines what counts as blockable. Edit it freely; the default targets controversial, politically aggressive, negative, and low-effort statements.
+- **Debug Settings** switch between hiding posts, replacing them with a click-to-reveal white box, or just highlighting matches in red.
+- **Blocked Tags** shows the current blocklist. Each entry has a level number, which is how many parent elements get hidden along with the matched text. The AI button on an entry tells the model it made a mistake, so it refines its own prompt and unblocks that text.
+
+## Cost
+
+Scanning sends text to a paid API, so browsing costs real money (roughly cents per session with Haiku on tweet-only mode). Forcefield ships with a budget guard: spending is tracked from each response's token usage, and calls pause automatically at $1/hour or $2/day by default. Both limits are adjustable under **AI Budget** in Developer mode.
+
+## Personalization
+
+If you use X/Twitter, Forcefield logs your own likes, not-interested clicks, mutes, and blocks (locally, in extension storage). Once a day it uses that log to tune the filtering prompt to your actual taste: things you like become examples of what never to block, and things you mute become examples of what to catch. You can view, copy, or clear the log in the popup at any time. Only human clicks are recorded; the autonomous agent's own actions are excluded.
+
+## Autonomous curation (experimental, use with care)
+
+The **Run Now & Watch** button injects an agent into your X tab that scrolls the feed, asks the model about each batch of posts, and clicks **Not interested** or **Mute** through X's own menus to train your algorithm. It never blocks or reports anyone, has hard caps (5 mutes, 20 not-interested, 150 posts, 8 minutes per session), and shows a live overlay with a Stop button.
+
+Two warnings:
+
+- **X may flag automated sessions.** Automated interaction can violate X's terms of service, and X has been observed responding to these sessions with human verification challenges. An earlier version ran this nightly on a schedule; that mode has been removed. Only run it while you're watching, and stop if X starts challenging you.
+- Mutes are account-level. The caps keep the blast radius small, but review the run summary in the popup afterward.
+
+The page-filtering side of Forcefield (the ad-blocker-style hiding above) does not interact with X at all. It only hides things in your own browser, and is the recommended way to use this extension.
+
+## Privacy and security notes
+
+- Your API key is stored in `chrome.storage.sync`, which syncs across Chrome profiles signed into your Google account. It is sent only to the provider you chose (api.anthropic.com or generativelanguage.googleapis.com), directly from your browser.
+- Page text from allowed sites is sent to that same provider for analysis. Don't add sites whose content you don't want leaving your machine.
+- The blocklist, activity log, and spend log live in local extension storage. Nothing is sent to any server of ours; there is no server of ours.
+- The manifest requests broad host permissions so the blocker can run on any site you add to the allowed list.
+
+## Known issues
+
+- Blocks too much content at times. The default prompt is aggressive on purpose; soften it in the popup if it's catching things you want.
+- Text only. Images and videos slip through unless the model flags the caption.
+- The blocklist grows over a long session. Use **Clear All** in Developer mode if matching starts to feel slow.
+- X's DOM changes regularly. Selectors are written defensively (geometry checks instead of class names where possible), but a redesign can still break blocking until selectors are updated.
+
+## Roadmap
+
+- Fine-tune a small model so default blocking is much better.
+- Non-LLM pre-filtering so the extension can run cheaper or free.
+- A strictness dial and direct "block content like this" prompting.
 - Better UI/UX.
-- Promote.
+
+## License
+
+[MIT](LICENSE)
