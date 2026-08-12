@@ -825,7 +825,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 sendResponse({ error: e.message, decisions: [] });
             }
         } else if (request.command === "autonomousRunNow") {
-            const result = await startAutonomousRun(request.tabId || null);
+            const result = await startAutonomousRun(request.tabId || null, { fromAlarm: false });
             sendResponse(result);
         } else if (request.command === "autonomousStopAll") {
             await broadcastAutonomousStop();
@@ -941,12 +941,10 @@ async function maybePersonalizePrompt() {
 // --- Autonomous curation mode ----------------------------------------------
 // An injected agent (autonomousAgent.js) scrolls the X feed, ships tweet
 // batches here for an LLM verdict, and clicks Mute / Not-interested through
-// X's own menus. Triggered by the popup's Run Now button only.
-// Spend goes through the same callLLM cost guard as everything else.
-//
-// NOTE: the scheduled nightly run is disabled. Unattended automated scrolling
-// sessions were triggering X's human verification challenges. The supervised
-// Run Now mode remains available; use it while watching the tab.
+// X's own menus. Triggered by the popup's Run Now button, or by a midnight
+// alarm when the nightlyAutonomousEnabled config is turned on (OFF by
+// default: unattended sessions have triggered X's human verification
+// challenges). Spend goes through the same callLLM cost guard as everything.
 const AUTONOMOUS_DEFAULTS = {
     maxMutes: 5,             // account-level, so kept deliberately low
     maxNotInterested: 20,
@@ -954,6 +952,8 @@ const AUTONOMOUS_DEFAULTS = {
     maxDurationMs: 8 * 60 * 1000,
     batchSize: 12
 };
+const AUTONOMOUS_ALARM = 'forcefield-autonomous-nightly';
+let autonomousAlarmTabId = null; // tab we opened ourselves at midnight (closed when done)
 
 async function decideAutonomousActions(tweets) {
     if (!tweets.length) return [];
@@ -1028,7 +1028,7 @@ function isXUrl(url) {
 }
 
 // Find or open an x.com tab, wait for it to load, then inject the agent.
-async function startAutonomousRun(preferredTabId) {
+async function startAutonomousRun(preferredTabId, { fromAlarm } = { fromAlarm: false }) {
     let tab = null;
     if (preferredTabId) {
         try {
@@ -1039,12 +1039,13 @@ async function startAutonomousRun(preferredTabId) {
     if (!tab) {
         const xTabs = await chrome.tabs.query({ url: ['https://x.com/*', 'https://*.x.com/*', 'https://twitter.com/*', 'https://*.twitter.com/*'] });
         tab = xTabs[0] || null;
-        if (tab) {
+        if (tab && !fromAlarm) {
             await chrome.tabs.update(tab.id, { active: true });
         }
     }
     if (!tab) {
-        tab = await chrome.tabs.create({ url: 'https://x.com/home', active: true });
+        tab = await chrome.tabs.create({ url: 'https://x.com/home', active: !fromAlarm });
+        if (fromAlarm) autonomousAlarmTabId = tab.id;
         const loaded = await waitForTabComplete(tab.id, 30000);
         if (!loaded) return { error: 'x.com did not finish loading within 30s' };
         // Give X's SPA a moment to render the timeline after "complete".
@@ -1052,7 +1053,7 @@ async function startAutonomousRun(preferredTabId) {
     }
     try {
         await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['autonomousAgent.js'] });
-        console.log(`[Forcefield BG] Autonomous session started in tab ${tab.id}.`);
+        console.log(`[Forcefield BG] Autonomous session started in tab ${tab.id}${fromAlarm ? ' (nightly alarm)' : ''}.`);
         return { status: 'started', tabId: tab.id };
     } catch (e) {
         console.error('[Forcefield BG] Failed to inject autonomous agent:', e);
@@ -1100,11 +1101,47 @@ async function handleAutonomousDone(summary, tabId) {
         title: 'Forcefield autonomous run finished',
         message: msg
     });
+    // Only close the tab if WE opened it for the nightly run.
+    if (tabId && tabId === autonomousAlarmTabId) {
+        autonomousAlarmTabId = null;
+        setTimeout(() => chrome.tabs.remove(tabId).catch(() => {}), 10000);
+    }
 }
 
-// Clear the midnight alarm that older versions (2.1.x) scheduled, so upgraded
-// installs stop launching unattended sessions. Runs on every SW start.
-chrome.alarms.clear('forcefield-autonomous-nightly').catch(() => {});
+// Nightly scheduling is gated on the nightlyAutonomousEnabled config (Debug
+// Settings in the popup's Developer mode). It is OFF by default, and the key
+// is deliberately NEW: installs upgrading from 2.1.x (which used
+// autonomousNightly) start disabled and must opt back in.
+async function scheduleAutonomousAlarm() {
+    const { nightlyAutonomousEnabled } = await chrome.storage.sync.get(['nightlyAutonomousEnabled']);
+    if (nightlyAutonomousEnabled) {
+        const next = new Date();
+        next.setHours(24, 0, 0, 0); // upcoming midnight, local time
+        chrome.alarms.create(AUTONOMOUS_ALARM, { when: next.getTime(), periodInMinutes: 24 * 60 });
+        console.log(`[Forcefield BG] Nightly autonomous run scheduled for ${next.toLocaleString()}.`);
+    } else {
+        // Also clears alarms scheduled by 2.1.x under the old config key.
+        chrome.alarms.clear(AUTONOMOUS_ALARM);
+    }
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === AUTONOMOUS_ALARM) {
+        console.log('[Forcefield BG] Midnight alarm fired; starting autonomous run.');
+        startAutonomousRun(null, { fromAlarm: true })
+            .catch(e => console.error('[Forcefield BG] Nightly autonomous run failed to start:', e));
+    }
+});
+
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.nightlyAutonomousEnabled) {
+        scheduleAutonomousAlarm();
+    }
+});
+
+// (Re)evaluate whenever the service worker wakes up - alarms survive SW
+// suspension, but this also covers first install and browser restarts.
+scheduleAutonomousAlarm().catch(e => console.warn('[Forcefield BG] Could not schedule autonomous alarm:', e));
 // --- End autonomous curation mode -------------------------------------------
 
 async function handleStartScan(tabId) {

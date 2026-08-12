@@ -56,7 +56,7 @@ The **Run Now & Watch** button injects an agent into your X tab that scrolls the
 
 Two warnings:
 
-- **X may flag automated sessions.** Automated interaction can violate X's terms of service, and X has been observed responding to these sessions with human verification challenges. An earlier version ran this nightly on a schedule; that mode has been removed. Only run it while you're watching, and stop if X starts challenging you.
+- **X may flag automated sessions.** Automated interaction can violate X's terms of service, and X has been observed responding to these sessions with human verification challenges. A nightly-at-midnight schedule exists behind a config (Developer mode, Debug Settings) but is off by default for exactly this reason; leaving it off is recommended. Only run sessions while you're watching, and stop if X starts challenging you.
 - Mutes are account-level. The caps keep the blast radius small, but review the run summary in the popup afterward.
 
 The page-filtering side of Forcefield (the ad-blocker-style hiding above) does not interact with X at all. It only hides things in your own browser, and is the recommended way to use this extension.

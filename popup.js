@@ -69,10 +69,23 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- Autonomous curation (Run Now button, last-run summary) ---
-// The nightly-at-midnight toggle was removed: unattended automated sessions
-// were triggering X's human verification challenges. Supervised runs only.
 const runAutonomousButton = document.getElementById('runAutonomousButton');
 const stopAutonomousButton = document.getElementById('stopAutonomousButton');
+
+// Nightly-at-midnight config lives in Developer mode's Debug Settings and is
+// OFF by default: unattended automated sessions have triggered X's human
+// verification challenges. The background reschedules on change.
+const nightlyAutonomousCheckbox = document.getElementById('nightlyAutonomousCheckbox');
+if (nightlyAutonomousCheckbox) {
+    chrome.storage.sync.get(['nightlyAutonomousEnabled'], (res) => {
+        nightlyAutonomousCheckbox.checked = !!res.nightlyAutonomousEnabled;
+    });
+    nightlyAutonomousCheckbox.addEventListener('change', () => {
+        chrome.storage.sync.set({ nightlyAutonomousEnabled: nightlyAutonomousCheckbox.checked }, () => {
+            console.log(`[Forcefield Popup] Nightly autonomous mode ${nightlyAutonomousCheckbox.checked ? 'enabled' : 'disabled'}.`);
+        });
+    });
+}
 
 function renderAutonomousLastRun(summary) {
     const el = document.getElementById('autonomousLastRun');
