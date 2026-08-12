@@ -882,6 +882,21 @@ const TASTE_SUMMARY_TRIGGER_CHARS = 20000; // ~5000 tokens of new activity
 const TASTE_SUMMARY_MIN_EXAMPLES = 5;
 const TASTE_RECENT_EXAMPLES = 5;
 
+// The summary is always this two-section bullet-point shape. This placeholder
+// is the "previous summary" fed to the very first generation, and it also
+// stands in inside taste contexts until a real summary has been generated.
+const TASTE_SUMMARY_PLACEHOLDER = `A previous summary of the user's likes (important not to block)
+- (example topic list)
+- (example user list)
+- (example tone and discourse quality)
+- Other notes and observations from their liked posts
+
+A previous summary of the user's dislikes (important to block)
+- (example topic list)
+- (example user list)
+- (example tone and discourse quality)
+- Other notes and observations from their disliked, muted, or not-interested posts`;
+
 // All negative-signal entries (not interested + muted + blocked), oldest
 // first, so slice(-n) yields the n most recent across the three lists.
 function dislikedActivityOf(activity) {
@@ -906,9 +921,7 @@ async function getTasteContext() {
     if (!(tasteSummary && tasteSummary.text) && liked.length + disliked.length === 0) return '';
 
     const parts = ["This user's taste profile, learned from their own activity on this account:"];
-    if (tasteSummary && tasteSummary.text) {
-        parts.push('---\n' + tasteSummary.text + '\n---');
-    }
+    parts.push('---\n' + ((tasteSummary && tasteSummary.text) || TASTE_SUMMARY_PLACEHOLDER) + '\n---');
     if (liked.length > 0) {
         parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED (do NOT flag content like this):\n` +
             formatActivityExamples(liked, TASTE_RECENT_EXAMPLES));
@@ -945,10 +958,29 @@ async function maybeUpdateTasteSummary() {
     await chrome.storage.local.set({ tasteNewChars: 0 });
 
     const fmtAll = (list) => formatActivityExamples(list, 100) || '(none)';
-    const system = `You write taste profiles for a personal content filter. From the user's own social media activity, write a profile of their content preferences in two parts: content this user values and wants to see (drawn from their liked posts), and content this user does not want to see (drawn from posts they marked not interested, muted, or blocked). Describe topics, styles, tones, and recurring patterns, naming the strongest and most consistent signals first. Be concrete enough that another AI could use the profile alone to judge an unseen post. The profile MUST be between 300 and 1000 words. Return ONLY the profile text, with no title, preamble, or commentary.`;
-    const userText = `Posts the user LIKED:\n${fmtAll(liked)}\n\nPosts the user marked not interested / muted / blocked:\n${fmtAll(disliked)}`;
+    const previousSummary = (hasSummary && tasteSummary.text) || TASTE_SUMMARY_PLACEHOLDER;
 
-    console.log(`[Forcefield BG] Generating taste summary from ${liked.length} liked / ${disliked.length} disliked posts via ${model}...`);
+    const system = `You maintain the taste profile for a personal content filter. You will receive the previous profile (a placeholder template on the first run) and the user's recent social media activity. Update the profile with what the new activity shows, keeping observations from the previous profile that still hold and dropping ones the new activity contradicts.
+
+The profile MUST keep exactly this two-section bullet-point structure, with these exact section headers:
+
+A previous summary of the user's likes (important not to block)
+- (bullets on topics they engage with)
+- (bullets on accounts/users they engage with)
+- (bullets on the tone and discourse quality they prefer)
+- Other notes and observations from their liked posts
+
+A previous summary of the user's dislikes (important to block)
+- (bullets on topics they avoid)
+- (bullets on accounts/users they avoid)
+- (bullets on the tone and discourse quality they avoid)
+- Other notes and observations from their disliked, muted, or not-interested posts
+
+Replace the parenthesized placeholders with real observations, using several bullets per category when the data supports it and naming the strongest, most consistent signals first. Keep a placeholder bullet only where there is genuinely no data yet. Be concrete enough that another AI could judge an unseen post from the profile alone. The whole profile MUST be between 300 and 1000 words. Return ONLY the profile text, with no extra title, preamble, or commentary.`;
+
+    const userText = `Previous profile:\n---\n${previousSummary}\n---\n\nRecent posts the user LIKED:\n${fmtAll(liked)}\n\nRecent posts the user marked not interested / muted / blocked:\n${fmtAll(disliked)}`;
+
+    console.log(`[Forcefield BG] Updating taste summary from ${liked.length} liked / ${disliked.length} disliked posts via ${model}...`);
     try {
         const text = (await callLLM({
             model: model,
@@ -959,9 +991,14 @@ async function maybeUpdateTasteSummary() {
             geminiApiKey: geminiApiKey
         })).trim();
 
-        // Length gate with a little slack around the 300-1000 word target.
+        // Structure gate: both section headers must survive. Length gate with
+        // a little slack around the 300-1000 word target.
         const words = text.split(/\s+/).filter(Boolean).length;
-        if (words >= 250 && words <= 1200) {
+        const hasStructure = text.includes("summary of the user's likes") &&
+            text.includes("summary of the user's dislikes");
+        if (!hasStructure) {
+            console.warn('[Forcefield BG] Taste summary discarded: missing the two required section headers.');
+        } else if (words >= 250 && words <= 1200) {
             await chrome.storage.local.set({
                 tasteSummary: {
                     text: text,
