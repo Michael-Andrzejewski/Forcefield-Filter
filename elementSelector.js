@@ -61,9 +61,8 @@
             console.log('[Forcefield] Element selected. Text:', trimmedText);
 
             if (chrome.runtime && chrome.runtime.sendMessage) {
-                // Send message for prompt refinement
-                chrome.runtime.sendMessage({ command: "elementSelected", text: trimmedText });
-                // Send message to add to blocklist and re-block the page
+                // Add to the blocklist and re-block the page (handled by the
+                // background service worker).
                 chrome.runtime.sendMessage({ command: "addAndBlockSelectedText", text: trimmedText });
             }
 

@@ -782,6 +782,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else if (request.command === "refineTextWithAI") {
             await refinePromptsWithAI(request.text, sender.tab.id);
             sendResponse({status: "Refinement request received"});
+        } else if (request.command === "addAndBlockSelectedText") {
+            // Sent by elementSelector.js when the user picks an element with
+            // "Select Element". Persist the text so the block survives
+            // re-renders and future page loads, then re-run the blocker.
+            const tabId = sender.tab ? sender.tab.id : null;
+            const selectedText = (request.text || '').trim();
+            if (selectedText) {
+                // Cap the stored phrase: the matcher skips elements whose text
+                // exceeds 1000 chars, and a prefix still substring-matches
+                // after normalization.
+                await addSuggestedWords([selectedText.slice(0, 500)], null, 'manual_select', tabId);
+                if (tabId) {
+                    const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
+                    if (blockList && blockList.length > 0) {
+                        triggerPageBlock(tabId, blockList, debugMode || false, whiteboxMode || false);
+                    }
+                }
+            }
+            sendResponse({ status: "Selected text added to blocklist" });
         } else if (request.command === "runBlocker") {
             // Sent by content scripts (sender.tab set) AND by the popup
             // (no sender.tab — it passes request.tabId instead).
