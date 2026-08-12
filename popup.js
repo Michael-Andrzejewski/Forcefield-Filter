@@ -426,11 +426,11 @@ function updateScanningButtons(isActive, isDisabled = false) {
             if (isActive) {
                 button.classList.remove('inactive');
                 button.classList.add('active');
-                text.textContent = 'Stop Scanning';
+                text.textContent = 'Stop Scanning/Hiding';
             } else {
                 button.classList.remove('active');
                 button.classList.add('inactive');
-                text.textContent = 'Start Scanning';
+                text.textContent = 'Start Scanning/Hiding';
             }
             button.disabled = isDisabled;
         }
