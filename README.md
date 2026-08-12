@@ -90,4 +90,8 @@ The page-filtering side of Forcefield (the ad-blocker-style hiding above) does n
 
 ## License
 
-[MIT](LICENSE)
+Copyright (c) 2026 Michael Andrzejewski. Licensed under the [GNU Affero General Public License v3.0](LICENSE).
+
+You are free to use, modify, and share Forcefield, including at work. If you distribute a modified version, or run one as a network service, you must make your source available under the same license.
+
+If you want to build on Forcefield in a closed-source or proprietary product, a separate commercial license is available. Open an issue or reach out on X ([@Soareverix](https://x.com/Soareverix)).
