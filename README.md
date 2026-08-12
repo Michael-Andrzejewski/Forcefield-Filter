@@ -48,7 +48,9 @@ Scanning sends text to a paid API, so browsing costs real money (roughly cents p
 
 ## Personalization
 
-If you use X/Twitter, Forcefield logs your own likes, not-interested clicks, mutes, and blocks (locally, in extension storage). Once a day it uses that log to tune the filtering prompt to your actual taste: things you like become examples of what never to block, and things you mute become examples of what to catch. You can view, copy, or clear the log in the popup at any time. Only human clicks are recorded; the autonomous agent's own actions are excluded.
+If you use X/Twitter, Forcefield logs your own likes, not-interested clicks, mutes, and blocks (locally, in extension storage). From that log it maintains a **taste profile**: an LLM-written summary (300 to 1000 words) of what you actually like and dislike, covering topics, styles, and tones. The profile is generated automatically once enough activity exists and regenerated after roughly 5000 tokens of new liked or disliked content accumulates.
+
+Every blocking scan and every autonomous decision then receives this profile plus your 5 most recent liked posts and 5 most recent not-interested/muted/blocked posts verbatim, so the filter tracks your current taste without you editing prompts. Your system prompt itself is never modified. You can view, copy, or clear the activity log in the popup at any time. Only human clicks are recorded; the autonomous agent's own actions are excluded.
 
 ## Autonomous curation (experimental, use with care)
 

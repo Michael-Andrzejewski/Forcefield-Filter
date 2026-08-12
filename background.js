@@ -867,76 +867,118 @@ async function isSiteAllowed(url) {
     });
 }
 
-// --- Daily prompt personalization from the Twitter activity log ---------
-// Once per 24h (checked at scan start), ask Claude Haiku to refine the
-// system prompt using the user's own signals: liked tweets = content the
-// filter must NOT block; not-interested/muted/blocked = content it SHOULD.
-const PERSONALIZATION_INTERVAL_MS = 24 * 3600 * 1000;
-const PERSONALIZATION_MODEL = 'claude-haiku-4-5';
-const PERSONALIZATION_MIN_EXAMPLES = 3;
+// --- Taste profile: aggregate summary of the user's Twitter activity -------
+// Blocking scans and autonomous decisions are personalized through a "taste
+// context": an LLM-written summary (300 to 1000 words) of what this user
+// likes and dislikes, plus the 5 most recent liked posts and the 5 most
+// recent not-interested/muted/blocked posts verbatim.
+//
+// twitterTracker.js counts the characters of each newly recorded activity
+// entry into tasteNewChars (local storage). The summary is regenerated once
+// roughly 5000 tokens (~20000 chars at ~4 chars/token) of new activity has
+// accumulated, and generated the first time enough activity exists. It never
+// touches the user's system prompt; it is appended to requests separately.
+const TASTE_SUMMARY_TRIGGER_CHARS = 20000; // ~5000 tokens of new activity
+const TASTE_SUMMARY_MIN_EXAMPLES = 5;
+const TASTE_RECENT_EXAMPLES = 5;
 
-async function maybePersonalizePrompt() {
-    const { lastPromptPersonalization, twitterActivity } =
-        await chrome.storage.local.get(['lastPromptPersonalization', 'twitterActivity']);
-    if (lastPromptPersonalization && Date.now() - lastPromptPersonalization < PERSONALIZATION_INTERVAL_MS) {
-        return;
-    }
+// All negative-signal entries (not interested + muted + blocked), oldest
+// first, so slice(-n) yields the n most recent across the three lists.
+function dislikedActivityOf(activity) {
+    return [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])]
+        .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+}
 
+function formatActivityExamples(list, n) {
+    return list.slice(-n)
+        .map(e => `- ${(e.handle || e.displayName || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+        .join('\n');
+}
+
+// The personalization block appended to blocking and autonomous prompts:
+// summary (when one has been generated) + the freshest 5 examples per side.
+async function getTasteContext() {
+    const { tasteSummary, twitterActivity } =
+        await chrome.storage.local.get(['tasteSummary', 'twitterActivity']);
     const activity = twitterActivity || {};
     const liked = activity.liked || [];
-    const disliked = [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])];
-    if (liked.length + disliked.length < PERSONALIZATION_MIN_EXAMPLES) {
-        console.log('[Forcefield BG] Personalization skipped: not enough Twitter activity yet.');
+    const disliked = dislikedActivityOf(activity);
+    if (!(tasteSummary && tasteSummary.text) && liked.length + disliked.length === 0) return '';
+
+    const parts = ["This user's taste profile, learned from their own activity on this account:"];
+    if (tasteSummary && tasteSummary.text) {
+        parts.push('---\n' + tasteSummary.text + '\n---');
+    }
+    if (liked.length > 0) {
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED (do NOT flag content like this):\n` +
+            formatActivityExamples(liked, TASTE_RECENT_EXAMPLES));
+    }
+    if (disliked.length > 0) {
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, disliked.length)} most recent posts the user marked not interested, muted, or blocked (DO flag content like this):\n` +
+            formatActivityExamples(disliked, TASTE_RECENT_EXAMPLES));
+    }
+    return parts.join('\n\n');
+}
+
+async function maybeUpdateTasteSummary() {
+    const { tasteSummary, tasteNewChars, twitterActivity } =
+        await chrome.storage.local.get(['tasteSummary', 'tasteNewChars', 'twitterActivity']);
+    const activity = twitterActivity || {};
+    const liked = activity.liked || [];
+    const disliked = dislikedActivityOf(activity);
+    if (liked.length + disliked.length < TASTE_SUMMARY_MIN_EXAMPLES) return;
+
+    const hasSummary = !!(tasteSummary && tasteSummary.text);
+    if (hasSummary && (tasteNewChars || 0) < TASTE_SUMMARY_TRIGGER_CHARS) return;
+
+    const { anthropicApiKey, geminiApiKey, selectedAiModel } =
+        await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'selectedAiModel']);
+    const model = selectedAiModel || DEFAULT_AI_MODEL;
+    const keyForProvider = providerForModel(model) === 'google' ? geminiApiKey : anthropicApiKey;
+    if (!keyForProvider) {
+        console.log('[Forcefield BG] Taste summary skipped: no API key for the selected model.');
         return;
     }
 
-    const { anthropicApiKey, customSystemPrompt } =
-        await chrome.storage.sync.get(['anthropicApiKey', 'customSystemPrompt']);
-    if (!anthropicApiKey) {
-        console.log('[Forcefield BG] Personalization skipped: no Anthropic key (personalization uses Haiku).');
-        return;
-    }
+    // Reset the counter BEFORE calling, so a failed run retries only after
+    // the next batch of activity instead of on every scan.
+    await chrome.storage.local.set({ tasteNewChars: 0 });
 
-    // Stamp BEFORE calling so a failing run retries tomorrow, not on every scan.
-    await chrome.storage.local.set({ lastPromptPersonalization: Date.now() });
+    const fmtAll = (list) => formatActivityExamples(list, 100) || '(none)';
+    const system = `You write taste profiles for a personal content filter. From the user's own social media activity, write a profile of their content preferences in two parts: content this user values and wants to see (drawn from their liked posts), and content this user does not want to see (drawn from posts they marked not interested, muted, or blocked). Describe topics, styles, tones, and recurring patterns, naming the strongest and most consistent signals first. Be concrete enough that another AI could use the profile alone to judge an unseen post. The profile MUST be between 300 and 1000 words. Return ONLY the profile text, with no title, preamble, or commentary.`;
+    const userText = `Posts the user LIKED:\n${fmtAll(liked)}\n\nPosts the user marked not interested / muted / blocked:\n${fmtAll(disliked)}`;
 
-    const currentPrompt = customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
-    const fmt = (list) => list.slice(-15)
-        .map(e => `- ${(e.handle || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
-        .join('\n');
-
-    const metaSystem = `You refine a content-filter prompt for another AI. That AI reads social feeds and wraps statements to hide in <Negative> tags. You will receive its current system prompt plus two lists drawn from the user's real Twitter behavior: tweets they LIKED (the filter must NOT flag content like this) and tweets they marked not-interested / muted / blocked (the filter SHOULD flag content like this). Rewrite the system prompt so its criteria better match this user's actual taste. You MUST preserve the exact output format instructions (<Negative> tags, no extra text, single statements only) and keep the prompt roughly the same length. Return ONLY the new system prompt, nothing else.`;
-
-    const metaUser = `Current system prompt:\n---\n${currentPrompt}\n---\n\nTweets the user LIKED (do NOT block content like this):\n${fmt(liked) || '(none)'}\n\nTweets the user marked not interested / muted / blocked (DO block content like this):\n${fmt(disliked) || '(none)'}`;
-
-    console.log(`[Forcefield BG] Personalizing system prompt from ${liked.length} liked / ${disliked.length} disliked tweets via ${PERSONALIZATION_MODEL}...`);
+    console.log(`[Forcefield BG] Generating taste summary from ${liked.length} liked / ${disliked.length} disliked posts via ${model}...`);
     try {
-        const newPrompt = (await callLLM({
-            model: PERSONALIZATION_MODEL,
-            system: metaSystem,
-            userText: metaUser,
-            maxTokens: 4096,
-            anthropicApiKey: anthropicApiKey
+        const text = (await callLLM({
+            model: model,
+            system: system,
+            userText: userText,
+            maxTokens: 2048,
+            anthropicApiKey: anthropicApiKey,
+            geminiApiKey: geminiApiKey
         })).trim();
 
-        // Sanity gate: must still instruct the tagging format, or we discard it.
-        if (newPrompt.length > 100 && newPrompt.includes('<Negative>')) {
-            await chrome.storage.sync.set({ customSystemPrompt: newPrompt });
-            console.log('[Forcefield BG] Personalized system prompt saved.');
-            chrome.notifications.create({
-                type: 'basic',
-                iconUrl: 'icons/icon128.png',
-                title: 'Forcefield personalized',
-                message: 'The filter prompt was tuned to your recent likes and mutes. Review it in the popup if curious.'
+        // Length gate with a little slack around the 300-1000 word target.
+        const words = text.split(/\s+/).filter(Boolean).length;
+        if (words >= 250 && words <= 1200) {
+            await chrome.storage.local.set({
+                tasteSummary: {
+                    text: text,
+                    updatedAt: Date.now(),
+                    likedCount: liked.length,
+                    dislikedCount: disliked.length
+                }
             });
+            console.log(`[Forcefield BG] Taste summary saved (${words} words).`);
         } else {
-            console.warn('[Forcefield BG] Personalization output failed the format check; keeping the current prompt.');
+            console.warn(`[Forcefield BG] Taste summary discarded: ${words} words is outside the 300-1000 target.`);
         }
     } catch (error) {
-        console.warn('[Forcefield BG] Personalization failed (will retry after 24h):', error.message);
+        console.warn('[Forcefield BG] Taste summary generation failed:', error.message);
     }
 }
-// --- End personalization --------------------------------------------------
+// --- End taste profile ------------------------------------------------------
 
 // --- Autonomous curation mode ----------------------------------------------
 // An injected agent (autonomousAgent.js) scrolls the X feed, ships tweet
@@ -959,12 +1001,7 @@ async function decideAutonomousActions(tweets) {
     if (!tweets.length) return [];
     const { anthropicApiKey, geminiApiKey, selectedAiModel, customSystemPrompt } =
         await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'selectedAiModel', 'customSystemPrompt']);
-    const { twitterActivity } = await chrome.storage.local.get(['twitterActivity']);
-
-    const activity = twitterActivity || {};
-    const fmtTaste = (list) => (list || []).slice(-10)
-        .map(e => `- ${(e.handle || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 150)}`)
-        .join('\n') || '(no examples yet)';
+    const tasteContext = await getTasteContext();
 
     const system = `You are a careful feed curator acting on a user's behalf on X/Twitter while they sleep. For each numbered post, pick exactly one action:
 - "mute": the ACCOUNT is a net negative for this user (rage-bait, engagement-bait, spam, outrage farming, or content squarely matching what they filter out). Muting hides ALL future posts from that account, so only choose it when the post strongly suggests the whole account is like this. It is reversible but expensive to review, so be sparing.
@@ -980,11 +1017,7 @@ Respond with ONLY a JSON array, one entry per post, no other text:
 ${filterCriteria.slice(0, 2000)}
 ---
 
-Posts the user LIKED recently (they want content like this - lean "none"):
-${fmtTaste(activity.liked)}
-
-Posts the user marked not-interested / muted / blocked (they dislike content like this):
-${fmtTaste([...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])])}
+${tasteContext || '(No taste data recorded yet: lean strongly toward "none".)'}
 
 Posts to judge:
 ${tweets.map((t, i) => `${i}. ${t.handle}: ${t.text}`).join('\n')}`;
@@ -1029,6 +1062,10 @@ function isXUrl(url) {
 
 // Find or open an x.com tab, wait for it to load, then inject the agent.
 async function startAutonomousRun(preferredTabId, { fromAlarm } = { fromAlarm: false }) {
+    // Refresh the taste summary first if enough new activity accumulated, so
+    // this session's decisions use it (fire-and-forget; decisions fall back
+    // to the previous summary if generation is still in flight).
+    maybeUpdateTasteSummary().catch(e => console.warn('[Forcefield BG] Taste summary error:', e));
     let tab = null;
     if (preferredTabId) {
         try {
@@ -1146,8 +1183,9 @@ scheduleAutonomousAlarm().catch(e => console.warn('[Forcefield BG] Could not sch
 
 async function handleStartScan(tabId) {
     console.log(`[Forcefield BG] Handling start scan for tab ${tabId}`);
-    // Fire-and-forget: once a day, tune the prompt to the user's Twitter activity.
-    maybePersonalizePrompt().catch(e => console.warn('[Forcefield BG] Personalization error:', e));
+    // Fire-and-forget: regenerate the taste summary if enough new activity
+    // has accumulated (or none exists yet).
+    maybeUpdateTasteSummary().catch(e => console.warn('[Forcefield BG] Taste summary error:', e));
     // When starting, first stop any previously active scan
     const { activeScanTabId } = await chrome.storage.local.get(['activeScanTabId']);
     if (activeScanTabId && activeScanTabId !== tabId) {
@@ -1267,15 +1305,22 @@ async function handleNewContent(text, tabId) {
 
         const userPrompt = `${userPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
 
+        // Personalize every scan with the taste profile: aggregate summary
+        // plus the 5 freshest liked and 5 freshest disliked posts.
+        const tasteContext = await getTasteContext();
+        const fullSystemPrompt = tasteContext ? `${systemPrompt}\n\n${tasteContext}` : systemPrompt;
+
         console.log(`${logPrefix} Sending request to AI via ${provider} (${aiModel})...`);
         // Surface the scan in the *page* console too, so behaviour is visible
         // without opening the service-worker console.
         logToPageConsole(tabId, `[Forcefield AI] Scanning ${text.length} chars via ${provider} (${aiModel})…`);
         // cacheSystem: this is the hot path — cache the stable system prefix so
         // repeated scans in a session re-read it cheaply (once it's large enough).
+        // The taste context only changes when the summary regenerates or the
+        // user likes/mutes something, so it stays cache-friendly within a session.
         const aiResponseContent = await callLLM({
             model: aiModel,
-            system: systemPrompt,
+            system: fullSystemPrompt,
             userText: userPrompt,
             maxTokens: 4096,
             anthropicApiKey: allConfig.anthropicApiKey,

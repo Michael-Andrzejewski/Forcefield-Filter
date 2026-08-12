@@ -55,10 +55,11 @@
     function record(category, info, opts) {
         if (!info || (!info.text && !info.handle)) return; // nothing identifiable to store
         console.log(`[Forcefield] ${category}${opts && opts.remove ? ' (remove)' : ''}${opts && opts.removeByHandle ? ' (remove by handle)' : ''}:`, info.handle || info.displayName || '(unknown)', '-', (info.text || '').slice(0, 60));
-        chrome.storage.local.get([STORAGE_KEY], (res) => {
+        chrome.storage.local.get([STORAGE_KEY, 'tasteNewChars'], (res) => {
             const store = Object.assign({}, EMPTY, res[STORAGE_KEY] || {});
             const list = store[category] = (store[category] || []);
             const k = keyOf(info);
+            const update = { [STORAGE_KEY]: store };
 
             if (opts && opts.removeByHandle) {
                 // Un-mute / un-block are account-level: drop every entry from
@@ -80,8 +81,13 @@
                 if (list.length > MAX_ENTRIES_PER_CATEGORY) {
                     store[category] = list.slice(-MAX_ENTRIES_PER_CATEGORY);
                 }
+                // New-activity counter for the taste summary: the background
+                // regenerates the aggregate profile after ~5000 tokens
+                // (~20000 chars) of newly recorded likes/mutes/etc.
+                update.tasteNewChars = (res.tasteNewChars || 0) +
+                    (info.text || '').length + (info.handle || '').length;
             }
-            chrome.storage.local.set({ [STORAGE_KEY]: store });
+            chrome.storage.local.set(update);
         });
     }
 
