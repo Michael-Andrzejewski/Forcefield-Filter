@@ -735,9 +735,10 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
             const tab = await chrome.tabs.get(tabId);
             if (await isSiteAllowed(tab.url)) {
                 console.log(`[Forcefield BG] New active tab ${tabId} is on an allowed site. Starting observer.`);
+                // Record the active tab first: the observer's initial scan is
+                // discarded if it reaches the background before this is set.
+                await chrome.storage.local.set({ activeScanTabId: tabId });
                 startObserverInTab(tabId);
-                // And update the background's knowledge of the active tab
-                chrome.storage.local.set({ activeScanTabId: tabId });
             } else {
                 console.log(`[Forcefield BG] New active tab ${tabId} is not on an allowed site. Observer will not start.`);
                 // If the new tab is not allowed, we don't have an "active" scanning tab.
@@ -745,6 +746,18 @@ chrome.tabs.onActivated.addListener(async (activeInfo) => {
             }
         }
     });
+});
+
+// A key saved while scanning is on: restart the observer so the tweets already
+// on screen (turned away while there was no key) are scanned right away,
+// instead of only whatever the user scrolls to next.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area !== 'sync' || !(changes.anthropicApiKey || changes.geminiApiKey)) return;
+    const { isScanning, activeScanTabId } = await chrome.storage.local.get(['isScanning', 'activeScanTabId']);
+    if (isScanning && activeScanTabId) {
+        console.log(`[Forcefield BG] API key changed; rescanning tab ${activeScanTabId}.`);
+        startObserverInTab(activeScanTabId);
+    }
 });
 
 console.log("[Forcefield Background] Service worker started.");
@@ -1325,7 +1338,20 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
                 ? "Global scanning is off"
                 : `Content from inactive tab ${tabId} (active is ${result.activeScanTabId})`;
             console.log(`${onMessageLogPrefix} Content from tab ${tabId} will be ignored. Reason: ${reason}.`);
-            safeSendResponse({status: "Content ignored by background", reason: reason});
+            safeSendResponse({status: "Content ignored by background", accepted: false, reason: reason});
+            return;
+        }
+
+        // Without a key for the selected model the scan cannot run. Say so, so
+        // the page keeps these tweets and retries them once a key is saved.
+        const { selectedAiModel, anthropicApiKey, geminiApiKey } =
+            await chrome.storage.sync.get(['selectedAiModel', 'anthropicApiKey', 'geminiApiKey']);
+        const provider = providerForModel(selectedAiModel || DEFAULT_AI_MODEL);
+        if (!(provider === 'google' ? geminiApiKey : anthropicApiKey)) {
+            const reason = `No ${provider === 'google' ? 'Gemini' : 'Anthropic'} API key saved`;
+            console.log(`${onMessageLogPrefix} Content from tab ${tabId} will be ignored. Reason: ${reason}.`);
+            logToPageConsole(tabId, `[Forcefield AI] Not scanning: ${reason}. Add it under Developer > API Keys.`);
+            safeSendResponse({status: "Content ignored by background", accepted: false, reason: reason});
             return;
         }
 
@@ -1360,7 +1386,7 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
         }
     } catch (error) {
         console.error(`${onMessageLogPrefix} Error processing new content:`, error);
-        safeSendResponse({status: "Error processing content", error: error.message});
+        safeSendResponse({status: "Error processing content", accepted: false, error: error.message});
     }
 }
 

@@ -5,6 +5,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     let observer = null;
     let debounceTimer = null;
     let newTextBuffer = []; // Collects text from mutations
+    let newKeyBuffer = []; // Tweet keys for the tweets in newTextBuffer (X only)
     let isObserving = false; // This will be controlled by messages
     const DEBOUNCE_DELAY = 1000; // 1 second — batches mutations so a fast scroll is one AI call, not ten
     const MIN_NODE_TEXT_LENGTH = 5; // Minimum length for a single node's text to be considered
@@ -27,11 +28,33 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         }
     }
 
+    // Tweets are marked as sent before the background has accepted them. If
+    // it then turns them away (scan not started for this tab yet, no API
+    // key), forget them so the next scan retries them instead of skipping
+    // them forever.
+    function forgetTweetKeys(keys) {
+        for (const key of keys) sentTweetKeys.delete(key);
+    }
+
+    // Sends a batch to the background. `keys` are the tweet keys inside it.
+    function sendNewContent(text, keys, logLabel) {
+        chrome.runtime.sendMessage({ command: "newContentDetected", text: text }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn(`[Forcefield CS] Error sending newContentDetected (${logLabel}):`, chrome.runtime.lastError.message);
+                forgetTweetKeys(keys);
+            } else if (!response || response.accepted === false) {
+                console.log(`[Forcefield CS] Background did not scan this batch (${logLabel}): ${response && response.reason}. Will retry these tweets.`);
+                forgetTweetKeys(keys);
+            }
+        });
+    }
+
     // Collect tweet texts under `root` that we have NOT sent to the AI yet.
-    // Returns { texts, sawTweets } — sawTweets is true if ANY tweet rendered
-    // (even an already-sent one), so the caller still re-runs the blocker.
+    // Returns { texts, keys, sawTweets } — sawTweets is true if ANY tweet
+    // rendered (even an already-sent one), so the caller still re-runs the blocker.
     function collectNewTweetTexts(root) {
         const texts = [];
+        const keys = [];
         let sawTweets = false;
         const els = [];
         if (root.matches && root.matches('[data-testid="tweetText"]')) els.push(root);
@@ -44,9 +67,10 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             if (!sentTweetKeys.has(key)) {
                 rememberTweetKey(key);
                 texts.push(t);
+                keys.push(key);
             }
         }
-        return { texts: texts, sawTweets: sawTweets };
+        return { texts: texts, keys: keys, sawTweets: sawTweets };
     }
 
     function canSendMessage() {
@@ -84,10 +108,13 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         }
         console.log('[Forcefield CS] Performing initial page scan...');
         const initialScanBuffer = [];
+        let initialKeys = [];
 
         if (IS_TWITTER) {
             // Tweet-only mode: collect just the tweet bodies on screen.
-            initialScanBuffer.push(...collectNewTweetTexts(document.body).texts);
+            const found = collectNewTweetTexts(document.body);
+            initialScanBuffer.push(...found.texts);
+            initialKeys = found.keys;
         }
 
         function collectVisibleTextRecursive(node, buffer) {
@@ -137,16 +164,14 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
                 console.log('[Forcefield Continuous Scan] Initial page scan text meeting criteria:', combinedText.substring(0, 200) + '...');
                 if (canSendMessage()) {
-                    chrome.runtime.sendMessage({ command: "newContentDetected", text: combinedText }, (response) => {
-                        if (chrome.runtime.lastError) {
-                            console.warn('[Forcefield CS] Error sending newContentDetected (initial scan):', chrome.runtime.lastError.message);
-                        }
-                    });
+                    sendNewContent(combinedText, initialKeys, 'initial scan');
                 } else {
                     console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected (initial scan).');
+                    forgetTweetKeys(initialKeys);
                 }
             } else {
                 console.log('[Forcefield Continuous Scan] Initial scan text too short, numeric, or insignificant, skipping AI call. Length:', combinedText.length, 'Text:', combinedText.substring(0,100) + '...');
+                forgetTweetKeys(initialKeys);
             }
         } else {
             console.log('[Forcefield Continuous Scan] Initial scan found no significant text to process.');
@@ -169,6 +194,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                     const found = collectNewTweetTexts(node);
                     if (found.sawTweets) significantChangeDetected = true;
                     if (found.texts.length > 0) newTextBuffer.push(...found.texts);
+                    if (found.keys.length > 0) newKeyBuffer.push(...found.keys);
                 }
             }
             scheduleDebouncedFlush(significantChangeDetected);
@@ -269,27 +295,26 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                 }
                 if (newTextBuffer.length > 0) {
                     const combinedText = newTextBuffer.join('\n\n').trim();
-                    newTextBuffer = []; 
+                    const keys = newKeyBuffer;
+                    newTextBuffer = [];
+                    newKeyBuffer = [];
 
                     if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
                         console.log('[Forcefield Continuous Scan] Debounced new text meeting criteria:', combinedText.substring(0,200) + '...');
                         if (canSendMessage()) {
-                            const messagePayload = { command: "newContentDetected", text: combinedText };
-                            chrome.runtime.sendMessage(messagePayload, (response) => {
-                                if (chrome.runtime.lastError) {
-                                     console.warn('[Forcefield CS] Error sending newContentDetected:', chrome.runtime.lastError.message, 'Payload:', messagePayload, 'Response received:', response);
-                                } else {
-                                    console.log('[Forcefield CS] Successfully sent newContentDetected. Response:', response, 'Payload:', messagePayload);
-                                }
-                            });
+                            sendNewContent(combinedText, keys, 'debounced');
                         } else {
                             console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected. Payload that would have been sent:', { command: "newContentDetected", text: combinedText.substring(0,100) + '...'});
                         }
                     } else {
                         console.log('[Forcefield Continuous Scan] Debounced text too short, numeric, or insignificant, skipping AI call. Length:', combinedText.length, 'Text:', combinedText.substring(0,100) + '...');
+                        // Too little text to scan alone: let these tweets ride
+                        // along with the next batch instead of dropping them.
+                        forgetTweetKeys(keys);
                     }
                 } else {
-                    newTextBuffer = []; 
+                    newTextBuffer = [];
+                    newKeyBuffer = [];
                 }
             }, DEBOUNCE_DELAY);
         }
@@ -300,8 +325,11 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             observer.disconnect();
             // observer = null; // Not strictly necessary as it's reassigned
         }
-        // Clear any pending operations from a previous state
-        newTextBuffer = []; 
+        // Clear any pending operations from a previous state. Unsent tweets
+        // are forgotten so the initial scan below picks them up again.
+        forgetTweetKeys(newKeyBuffer);
+        newTextBuffer = [];
+        newKeyBuffer = [];
         clearTimeout(debounceTimer);
 
         if (!document.body) {
@@ -332,7 +360,9 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             observer = null;
         }
         clearTimeout(debounceTimer);
+        forgetTweetKeys(newKeyBuffer);
         newTextBuffer = [];
+        newKeyBuffer = [];
         console.log('[Forcefield CS] Observer stopped.');
     }
 

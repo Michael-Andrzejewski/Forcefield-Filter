@@ -559,9 +559,7 @@ async function loadScanningState() {
                         console.warn('[Forcefield Popup] Error getting activeScanTabId:', chrome.runtime.lastError.message);
                         // Assume we need to start on current tab if background doesn't know
                         updateScanningStatus('Starting scan on current tab (unknown previous)...');
-                        startContinuousScanningLogic(currentTabId);
-                        chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: currentTabId })
-                            .catch(err => console.warn("[Forcefield Popup] Error notifying background (1):", err));
+                        startScanOnTab(currentTabId);
                         return;
                     }
 
@@ -588,9 +586,7 @@ async function loadScanningState() {
                         }
                         
                         // Start scanning on the current tab
-                        startContinuousScanningLogic(currentTabId);
-                        chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: currentTabId })
-                            .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan transfer:", err));
+                        startScanOnTab(currentTabId);
                     }
                 });
             });
@@ -634,9 +630,7 @@ async function pingContentScriptObserverState() {
                     // Content script might not be there, or tab is protected.
                     console.warn(`[Forcefield Popup] pingContentScriptObserverState: Content script unreachable on tab ${tabId}. Attempting to start scanning. Error:`, chrome.runtime.lastError.message);
                     updateScanningStatus('Content script issue. Restarting scan...');
-                    startContinuousScanningLogic(tabId); // Attempt to start/inject
-                    chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId })
-                         .catch(err => console.warn("[Forcefield Popup] Error notifying background (ping issue):", err));
+                    startScanOnTab(tabId); // The background injects the script if needed
                 } else if (response && response.isObserving) {
                     updateScanningStatus('Scanning active on this tab.');
                      // Ensure background knows this is the active tab
@@ -645,9 +639,7 @@ async function pingContentScriptObserverState() {
                 } else {
                     // Observer is not running, but should be.
                     updateScanningStatus('Observer stopped unexpectedly. Restarting scan...');
-                    startContinuousScanningLogic(tabId);
-                     chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId })
-                        .catch(err => console.warn("[Forcefield Popup] Error notifying background (ping restart):", err));
+                    startScanOnTab(tabId);
                 }
             });
         } else {
@@ -662,10 +654,7 @@ function startContinuousScanning() {
         updateScanningStatus('Starting scan...');
         chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
             if (tabs[0] && tabs[0].id) {
-                startContinuousScanningLogic(tabs[0].id);
-                // Notify background script that scanning has started for this tab
-                chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabs[0].id })
-                    .catch(err => console.warn("[Forcefield Popup] Error notifying background of scan start:", err));
+                startScanOnTab(tabs[0].id);
             } else {
                 console.error("[Forcefield] Could not get active tab ID to start scanning.");
                 updateScanningStatus('Error: No active tab found.');
@@ -701,6 +690,20 @@ async function logToActiveTabPageConsole(...args) {
         // Fallback for any other errors
         console.error('[Forcefield Popup Console Fallback] Error logging to page:', error, 'Original args:', ...args);
     }
+}
+
+// Start scanning on a tab through the background. The background records the
+// tab as the active scan tab BEFORE it starts the page observer; starting the
+// observer from here first raced that, and the background discarded the
+// initial scan of everything already on screen. Falls back to starting the
+// observer directly only if the background can't be reached.
+function startScanOnTab(tabId) {
+    chrome.runtime.sendMessage({ command: "startContinuousScanBG", tabId: tabId }, () => {
+        if (chrome.runtime.lastError) {
+            console.warn("[Forcefield Popup] Background unreachable, starting observer directly:", chrome.runtime.lastError.message);
+            startContinuousScanningLogic(tabId);
+        }
+    });
 }
 
 async function startContinuousScanningLogic(tabId) {
