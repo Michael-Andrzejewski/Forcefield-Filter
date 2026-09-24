@@ -1332,7 +1332,8 @@ function handleDebugModeChange() {
 // New function to load whitebox mode state
 function loadWhiteboxModeState() {
     chrome.storage.local.get(['whiteboxMode'], (result) => {
-        whiteboxModeCheckbox.checked = result.whiteboxMode || false;
+        // White box is the default until the user picks otherwise.
+        whiteboxModeCheckbox.checked = result.whiteboxMode !== false;
     });
 }
 

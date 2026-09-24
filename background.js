@@ -23,6 +23,13 @@ chrome.runtime.onInstalled.addListener(() => {
             chrome.storage.local.set({ developerMode: false });
         }
     });
+    // Blocked posts default to a click-to-reveal white box (layout kept)
+    // rather than vanishing. Only set when the user has never chosen.
+    chrome.storage.local.get(['whiteboxMode'], (result) => {
+        if (typeof result.whiteboxMode === 'undefined') {
+            chrome.storage.local.set({ whiteboxMode: true });
+        }
+    });
     // Set default allowed sites on first install
     chrome.storage.sync.get('allowedSites', (result) => {
         if (!result.allowedSites) {
@@ -809,7 +816,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 if (tabId) {
                     const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
                     if (blockList && blockList.length > 0) {
-                        triggerPageBlock(tabId, blockList, debugMode || false, whiteboxMode || false);
+                        triggerPageBlock(tabId, blockList, debugMode || false, whiteboxMode !== false);
                     }
                 }
             }
@@ -823,7 +830,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                     chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode'], resolve);
                 });
                 if (blockList && blockList.length > 0) {
-                    triggerPageBlock(targetTabId, blockList, debugMode || false, whiteboxMode || false);
+                    triggerPageBlock(targetTabId, blockList, debugMode || false, whiteboxMode !== false);
                 }
             }
             sendResponse({status: "Blocker triggered"});
@@ -1456,7 +1463,7 @@ async function handleNewContent(text, tabId) {
         // get hidden/highlighted.
         const { blockList } = await chrome.storage.local.get(['blockList']);
         if (blockList && blockList.length > 0) {
-            triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode || false);
+            triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode !== false);
         }
 
     } catch (error) {

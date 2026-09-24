@@ -39,7 +39,7 @@ Forcefield is not on the Chrome Web Store yet. Load it unpacked:
 Optional tuning, all in Developer mode:
 
 - **AI System Prompt** defines what counts as blockable. Edit it freely; the default targets controversial, politically aggressive, negative, and low-effort statements.
-- **Debug Settings** switch between hiding posts, replacing them with a click-to-reveal white box, or just highlighting matches in red.
+- **Debug Settings** switch between replacing blocked posts with a click-to-reveal white box (the default), hiding them outright, or just highlighting matches in red.
 - **Blocked Tags** shows the current blocklist. Each entry has a level number, which is how many parent elements get hidden along with the matched text. The AI button on an entry tells the model it made a mistake, so it refines its own prompt and unblocks that text.
 
 ## Cost
