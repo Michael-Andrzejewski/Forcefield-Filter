@@ -52,9 +52,64 @@ If you use X/Twitter, Forcefield logs your own likes, not-interested clicks, mut
 
 Every blocking scan and every autonomous decision then receives this profile plus your 5 most recent liked posts and 5 most recent not-interested/muted/blocked posts verbatim, so the filter tracks your current taste without you editing prompts.
 
-The profile is shown in the popup under **Your Taste Profile**, along with when it was last built and how close it is to the next automatic update. You can **edit it directly** to steer what gets hidden (your edits are used as-is by every scan), or press **Regenerate** to rebuild it from your activity immediately. Clearing the box resets it so it gets rebuilt from scratch.
+The profile is shown in the popup under **Your Taste Profile** (and under **Taste Profile** in Developer mode, which edits the same profile), along with when it was last built and how close it is to the next automatic update. You can **edit it directly** to steer what gets hidden (your edits are used as-is by every scan), or press **Regenerate** to rebuild it from your activity immediately. Clearing the box resets it so it gets rebuilt from scratch.
 
 You can view, copy, or clear the underlying activity log in the popup too. Only human clicks are recorded; the autonomous agent's own actions are excluded.
+
+## What the AI sees
+
+Each blocking scan is one request with two parts. The system message is your system prompt with the taste profile appended. The user message wraps the new feed text in the content instructions. In brackets, which popup field (or source) each piece comes from:
+
+```
+━━━━━━━━━━━━━━━━ SYSTEM MESSAGE ━━━━━━━━━━━━━━━━
+
+[system prompt: the "AI System Prompt" field]
+Your task is to identify:
+- (the kinds of statements you want blocked)
+...
+For each identified statement, wrap it precisely with <Negative> tags. ...
+
+[taste profile: the "Taste Profile" field, plus your recent activity]
+This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes.
+
+---
+A previous summary of the user's likes (important not to block)
+- (topics, accounts, tone)
+A previous summary of the user's dislikes (important to block)
+- (topics, accounts, tone)
+---
+
+The 5 most recent posts the user LIKED (do NOT flag content like this):
+- @handle: first 200 characters of the post
+- ...
+
+The 5 most recent posts the user marked not interested, muted, or blocked (DO flag content like this):
+- @handle: first 200 characters of the post
+- ...
+
+━━━━━━━━━━━━━━━━ USER MESSAGE ━━━━━━━━━━━━━━━━
+
+[content instructions: the "AI User Prompt Prefix" field]
+Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed. Judge each statement against this user's taste profile as well as the general criteria:
+
+----
+
+[feed content: new text from the page]
+Text of the first new tweet
+
+Text of the second new tweet
+
+...
+----
+
+Remember to only return the tagged statements, nothing else.
+```
+
+Notes:
+
+- The taste block is left out entirely until a profile or some logged activity exists, and each list of 5 recent posts appears only once you have activity of that kind.
+- On X/Twitter the feed content is tweet body text only: no names, handles, or like counts, with a blank line between tweets. On other sites it is the visible page text.
+- The model's reply is just the `<Negative>...</Negative>` statements. Those go on the local blocklist.
 
 ## Autonomous curation (experimental, use with care)
 
