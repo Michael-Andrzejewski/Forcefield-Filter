@@ -70,74 +70,85 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- Taste profile (visible, editable, regenerate on demand) ---
-const tasteProfileText = document.getElementById('tasteProfileText');
-const tasteProfileStatus = document.getElementById('tasteProfileStatus');
-const regenerateTasteButton = document.getElementById('regenerateTasteButton');
-const saveTasteButton = document.getElementById('saveTasteButton');
+// The same editor appears twice: a card in Simple mode and a section in
+// Developer mode. Both edit the one stored profile; saving either reloads
+// both through the storage.onChanged listener below.
+const tasteEditors = [
+    ['tasteProfileText', 'tasteProfileStatus', 'regenerateTasteButton', 'saveTasteButton'],
+    ['devTasteProfileText', 'devTasteProfileStatus', 'devRegenerateTasteButton', 'devSaveTasteButton']
+].map(([text, status, regen, save]) => ({
+    text: document.getElementById(text),
+    status: document.getElementById(status),
+    regen: document.getElementById(regen),
+    save: document.getElementById(save)
+})).filter(ed => ed.text);
 
-function setTasteStatus(text) {
-    if (tasteProfileStatus) tasteProfileStatus.textContent = text;
+function setTasteStatus(ed, text) {
+    if (ed.status) ed.status.textContent = text;
 }
 
 function loadTasteProfile() {
-    if (!tasteProfileText) return;
+    if (tasteEditors.length === 0) return;
     chrome.runtime.sendMessage({ command: 'getTasteProfile' }, (res) => {
-        if (chrome.runtime.lastError || !res) {
-            setTasteStatus('Could not load the profile.');
-            return;
-        }
-        // Don't clobber text the user is in the middle of editing.
-        if (document.activeElement !== tasteProfileText) {
-            tasteProfileText.value = (res.summary && res.summary.text) || '';
-        }
-        if (res.summary && res.summary.text) {
-            const when = new Date(res.summary.updatedAt).toLocaleString();
-            const source = res.summary.edited ? 'Edited by you' : 'Generated';
-            const pct = Math.min(100, Math.round((res.newChars / res.triggerChars) * 100));
-            setTasteStatus(`${source} ${when}. From ${res.likedCount} liked / ${res.dislikedCount} disliked posts. Next auto-update at ${pct}% of new activity.`);
-        } else if (res.likedCount + res.dislikedCount < res.minExamples) {
-            tasteProfileText.value = res.placeholder;
-            setTasteStatus(`No profile yet: needs ${res.minExamples} logged actions, you have ${res.likedCount + res.dislikedCount}. Like or mark posts not interested on X, then press Regenerate. (Template shown below.)`);
-        } else {
-            tasteProfileText.value = res.placeholder;
-            setTasteStatus(`No profile yet, but you have ${res.likedCount + res.dislikedCount} logged actions. Press Regenerate to build one now. (Template shown below.)`);
-        }
-    });
-}
-
-if (regenerateTasteButton) {
-    regenerateTasteButton.addEventListener('click', () => {
-        regenerateTasteButton.disabled = true;
-        regenerateTasteButton.textContent = 'Working…';
-        setTasteStatus('Asking the AI to rebuild your profile from your activity…');
-        chrome.runtime.sendMessage({ command: 'regenerateTasteProfile' }, (res) => {
-            regenerateTasteButton.disabled = false;
-            regenerateTasteButton.textContent = 'Regenerate';
+        for (const ed of tasteEditors) {
             if (chrome.runtime.lastError || !res) {
-                setTasteStatus('Regeneration failed: no response from the extension.');
-                return;
+                setTasteStatus(ed, 'Could not load the profile.');
+                continue;
             }
-            if (res.status === 'updated') {
-                loadTasteProfile();
+            // Don't clobber text the user is in the middle of editing.
+            const editing = document.activeElement === ed.text;
+            if (res.summary && res.summary.text) {
+                if (!editing) ed.text.value = res.summary.text;
+                const when = new Date(res.summary.updatedAt).toLocaleString();
+                const source = res.summary.edited ? 'Edited by you' : 'Generated';
+                const pct = Math.min(100, Math.round((res.newChars / res.triggerChars) * 100));
+                setTasteStatus(ed, `${source} ${when}. From ${res.likedCount} liked / ${res.dislikedCount} disliked posts. Next auto-update at ${pct}% of new activity.`);
+            } else if (res.likedCount + res.dislikedCount < res.minExamples) {
+                if (!editing) ed.text.value = res.placeholder;
+                setTasteStatus(ed, `No profile yet: needs ${res.minExamples} logged actions, you have ${res.likedCount + res.dislikedCount}. Like or mark posts not interested on X, then press Regenerate. (Template shown below.)`);
             } else {
-                setTasteStatus(res.message || 'Nothing to update.');
+                if (!editing) ed.text.value = res.placeholder;
+                setTasteStatus(ed, `No profile yet, but you have ${res.likedCount + res.dislikedCount} logged actions. Press Regenerate to build one now. (Template shown below.)`);
             }
-        });
+        }
     });
 }
 
-if (saveTasteButton) {
-    saveTasteButton.addEventListener('click', () => {
-        chrome.runtime.sendMessage({ command: 'saveTasteProfile', text: tasteProfileText.value }, (res) => {
-            if (chrome.runtime.lastError || !res) {
-                setTasteStatus('Save failed.');
-                return;
-            }
-            setTasteStatus(res.status === 'cleared'
-                ? 'Profile cleared. It will be rebuilt from your activity on the next scan.'
-                : 'Saved. Your edits are now used by every scan.');
+for (const ed of tasteEditors) {
+    if (ed.regen) {
+        ed.regen.addEventListener('click', () => {
+            ed.regen.disabled = true;
+            ed.regen.textContent = 'Working…';
+            setTasteStatus(ed, 'Asking the AI to rebuild your profile from your activity…');
+            chrome.runtime.sendMessage({ command: 'regenerateTasteProfile' }, (res) => {
+                ed.regen.disabled = false;
+                ed.regen.textContent = 'Regenerate';
+                if (chrome.runtime.lastError || !res) {
+                    setTasteStatus(ed, 'Regeneration failed: no response from the extension.');
+                    return;
+                }
+                if (res.status === 'updated') {
+                    loadTasteProfile();
+                } else {
+                    setTasteStatus(ed, res.message || 'Nothing to update.');
+                }
+            });
         });
-    });
+    }
+
+    if (ed.save) {
+        ed.save.addEventListener('click', () => {
+            chrome.runtime.sendMessage({ command: 'saveTasteProfile', text: ed.text.value }, (res) => {
+                if (chrome.runtime.lastError || !res) {
+                    setTasteStatus(ed, 'Save failed.');
+                    return;
+                }
+                setTasteStatus(ed, res.status === 'cleared'
+                    ? 'Profile cleared. It will be rebuilt from your activity on the next scan.'
+                    : 'Saved. Your edits are now used by every scan.');
+            });
+        });
+    }
 }
 
 // --- Autonomous curation (Run Now button, last-run summary) ---
