@@ -221,6 +221,33 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     // (the old camelCase selector matched nothing, so resets never ran).
     const previouslyAffected = document.querySelectorAll('[data-hidden-by-forcefield]');
     previouslyAffected.forEach(el => {
+        // Detach the previous scan's reveal handler. Without this every scan
+        // stacks one more handler on the same box, and on click the later
+        // ones run after the first has restored the post and wipe it blank.
+        if (el._forcefieldOnReveal) {
+            el.removeEventListener('click', el._forcefieldOnReveal, true);
+            delete el._forcefieldOnReveal;
+        }
+
+        // Whiteboxed: the full style attribute snapshot restores exactly.
+        // The per-property path below leaves the whitebox's !important rules
+        // behind, which the next snapshot would then capture as "original".
+        if (el.dataset.originalStyleAttr !== undefined) {
+            if (el.dataset.originalStyleAttr) el.setAttribute('style', el.dataset.originalStyleAttr);
+            else el.removeAttribute('style');
+            el.innerHTML = el.dataset.originalInnerHTML || '';
+            delete el.dataset[hiddenMarker];
+            delete el.dataset.originalStyleAttr;
+            delete el.dataset.originalDisplay;
+            delete el.dataset.originalVisibility;
+            delete el.dataset.originalBorder;
+            delete el.dataset.originalBackgroundColor;
+            delete el.dataset.originalWidth;
+            delete el.dataset.originalHeight;
+            delete el.dataset.originalInnerHTML;
+            return;
+        }
+
         // Restore original styles if they were saved
         if (el.dataset.originalDisplay) el.style.display = el.dataset.originalDisplay;
         else el.style.display = '';
@@ -357,11 +384,14 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                 note.style.cssText = 'color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; text-align: center !important; padding: 10px !important; user-select: none;';
                 elementToHide.appendChild(note);
                 elementToHide.style.cursor = 'pointer';
-                elementToHide.addEventListener('click', function onReveal(ev) {
+                const onReveal = function (ev) {
                     ev.preventDefault();
-                    ev.stopPropagation();
+                    ev.stopImmediatePropagation();
                     elementToHide.removeEventListener('click', onReveal, true);
-                    elementToHide.innerHTML = elementToHide.dataset.originalInnerHTML || '';
+                    delete elementToHide._forcefieldOnReveal;
+                    // Already restored (e.g. by a scan's reset): nothing to do.
+                    if (elementToHide.dataset.originalInnerHTML === undefined) return;
+                    elementToHide.innerHTML = elementToHide.dataset.originalInnerHTML;
                     if (elementToHide.dataset.originalStyleAttr) {
                         elementToHide.setAttribute('style', elementToHide.dataset.originalStyleAttr);
                     } else {
@@ -377,7 +407,9 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                     delete elementToHide.dataset.originalHeight;
                     delete elementToHide.dataset.originalInnerHTML;
                     elementToHide.dataset.forcefieldRevealed = '1';
-                }, true); // capture: run before X's own click handlers
+                };
+                elementToHide._forcefieldOnReveal = onReveal;
+                elementToHide.addEventListener('click', onReveal, true); // capture: run before X's own click handlers
 
                 elementToHide.dataset[hiddenMarker] = 'whiteboxed';
                 elementsAffected++;
