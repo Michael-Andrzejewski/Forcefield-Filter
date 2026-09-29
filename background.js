@@ -292,7 +292,10 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     });
 
     console.log(`[Forcefield Content Blocker (from SW)] Starting scan for ${blockListToUse.length} words/phrases. Debug: ${debugMode}`);
-    const allElements = document.body.getElementsByTagName('*');
+    // Static snapshot, not the live HTMLCollection: whiteboxing a post clears
+    // its innerHTML, which would shrink a live list mid-loop and leave
+    // allElements[i] undefined (crashing the scan after the first match).
+    const allElements = Array.from(document.body.getElementsByTagName('*'));
     let elementsAffected = 0;
 
     // Does this post have X's thread-connector line running DOWN to a reply?
@@ -432,6 +435,8 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
+        // Removed from the page by an earlier whitebox in this same scan.
+        if (!element.isConnected || !element.style) continue;
         // Skip logic considering whitebox mode
         if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !debugMode) {
             continue;
