@@ -10,7 +10,41 @@ function check(cond, name, detail) {
   if (cond) results.pass++;
   else { results.fail++; if (results.failures.length < 60) results.failures.push(name + (detail ? ' :: ' + detail : '')); }
 }
-function reset() { TL.innerHTML = ORIGINAL; window.__store = {}; window.__opened = 0; layout(); }
+// Stand-in for React: an expando on each text node (like __reactFiber$...)
+// and a handler bound directly to each "Show more" (like React's own).
+window.__showMore = 0;
+function reset() {
+  TL.innerHTML = ORIGINAL; window.__store = {}; window.__opened = 0; window.__showMore = 0;
+  document.querySelectorAll('[data-testid=tweetText]').forEach(t => { t.__reactFiber$test = { alive: true }; });
+  document.querySelectorAll('[data-testid=tweet-text-show-more-link]').forEach(b => b.addEventListener('click', e => { if (e.currentTarget.__reactFiber$test) { __showMore++; e.stopPropagation(); } }));
+  document.querySelectorAll('[data-testid=tweet-text-show-more-link]').forEach(b => { b.__reactFiber$test = { alive: true }; });
+  layout();
+}
+function checkReactAlive(p, node, tag) {
+  const a = art(p);
+  const tt = a.querySelector('[data-testid=tweetText]');
+  check(tt === node, tag + ' original text node kept (not rebuilt)');
+  check(!!(tt && tt.__reactFiber$test), tag + ' React link on text node intact');
+  const before = __showMore;
+  const sm = a.querySelector('[data-testid=tweet-text-show-more-link]');
+  if (sm) sm.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+  check(__showMore === before + 1, tag + ' Show more still clickable', `before=${before} after=${__showMore}`);
+  check(__opened === 0, tag + ' Show more click did not leak');
+}
+// Text actually painted on screen: skips text with no rendered area
+// (display:none ancestors, or zero font size inside a white box).
+function visibleText(el) {
+  const w = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let out = '', n;
+  while ((n = w.nextNode())) {
+    if (!n.textContent.trim()) continue;
+    const r = document.createRange(); r.selectNodeContents(n);
+    const rects = [...r.getClientRects()].filter(q => q.width > 0.5 && q.height > 0.5);
+    const cs = n.parentElement && getComputedStyle(n.parentElement);
+    if (rects.length && cs && cs.color !== 'rgba(0, 0, 0, 0)') out += n.textContent + ' ';
+  }
+  return out;
+}
 function scan(items) {
   try { actualContentBlockingFunction(items, false, true); }
   catch (e) { results.crashes.push(String(e && e.stack || e)); results.fail++; }
@@ -57,12 +91,15 @@ async function cycle(p, level, label) {
   const tag = `[${label} post${p} L${level}]`;
   const phrase = PHRASES[p];
   const origText = art(p).textContent;
+  const ttNode = art(p).querySelector('[data-testid=tweetText]');
   scan([{ text: phrase, level }]);
   const box = boxed(p);
   check(!!box, tag + ' whiteboxed after scan');
   if (!box) return;
   check(box.textContent.includes('click to reveal'), tag + ' reveal note shown');
-  check(!art(p).textContent.includes(phrase), tag + ' post text hidden');
+  check(!visibleText(art(p)).includes(phrase.slice(0, 15)), tag + ' post text hidden', visibleText(art(p)).slice(0, 80));
+  check([...box.children].every(c => c.dataset.forcefieldNote || getComputedStyle(c).display === 'none'), tag + ' only the note is visible in the box');
+  check(box.getBoundingClientRect().height >= 36, tag + ' box tall enough for the note');
   for (let q = 0; q < PHRASES.length; q++) if (q !== p) check(!boxed(q), tag + ' other post ' + q + ' untouched');
 
   click(box.firstElementChild || box);
@@ -70,6 +107,7 @@ async function cycle(p, level, label) {
   check(art(p).textContent.includes(phrase), tag + ' text restored');
   check(bars().length === 1, tag + ' exactly one bar', 'n=' + bars().length);
   checkBarGeometry(p, tag + ' reveal1');
+  checkReactAlive(p, ttNode, tag + ' reveal1');
   check(window.__opened === 0, tag + ' reveal click did not open post', 'opened=' + __opened);
 
   scan([{ text: phrase, level }]);
@@ -84,6 +122,7 @@ async function cycle(p, level, label) {
   click((boxed(p) && (boxed(p).firstElementChild || boxed(p))));
   check(art(p).textContent === origText + 'Hide again · Good block · Bad block', tag + ' second reveal restores exact text', JSON.stringify(art(p).textContent.slice(-60)));
   checkBarGeometry(p, tag + ' reveal2');
+  checkReactAlive(p, ttNode, tag + ' reveal2');
 
   click(link(art(p), 'Good block'));
   await sleep(15);
@@ -98,8 +137,10 @@ async function cycle(p, level, label) {
   check((st.badBlock || []).length === 1 && (st.goodBlock || []).length === 0, tag + ' Bad block replaces Good block', JSON.stringify(st).slice(0, 150));
   check(!boxed(p) && link(art(p), 'Bad block') && link(art(p), 'Bad block').textContent === 'Bad block (noted)', tag + ' Bad block leaves post shown, marks noted');
   checkBarGeometry(p, tag + ' afterBad');
+  checkReactAlive(p, ttNode, tag + ' afterBad');
   scan([{ text: phrase, level }]);
   check(!boxed(p) && bars().length === 1, tag + ' rescan after Bad block keeps it shown');
+  checkReactAlive(p, ttNode, tag + ' afterBadRescan');
   check(window.__opened === 0, tag + ' no clicks leaked to X', 'opened=' + __opened);
   check(typeof __store.tasteNewChars === 'number' && __store.tasteNewChars > 0, tag + ' tasteNewChars counted');
 }
@@ -121,7 +162,7 @@ async function cycle(p, level, label) {
   }
   // Final visual state for the screenshot: mixed levels, some revealed.
   reset();
-  scan(PHRASES.map((t, i) => ({ text: t, level: [0, 2, 1, 2, 3, 5][i] })));
+  scan(PHRASES.map((t, i) => ({ text: t, level: [0, 2, 0, 2, 3, 5][i] })));
   [0, 1, 3, 4].forEach(p => { const b = boxed(p); if (b) click(b.firstElementChild || b); });
   const b3 = link(art(3), 'Bad block'); if (b3) click(b3);
   layout();

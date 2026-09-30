@@ -34,6 +34,7 @@ function tweet(id, name, handle, textHtml) {
  <div style="flex:1 1 0px">
   <div class="row" data-part="header"><div data-testid="User-Name" class="row name"><div><span style="font-weight:700">${name}</span></div><div class="row" style="color:#536471;margin-left:4px"><div><span>${handle}</span></div><div style="padding:0 4px"><span>·</span></div><div><a href="https://x.com/${handle.slice(1)}/status/${id}"><time>10h</time></a></div></div></div><div class="caret">⋯</div></div>
   <div data-testid="tweetText" class="tt" lang="en">${textHtml}</div>
+  <div class="row"><div role="button" data-testid="tweet-text-show-more-link" style="color:#1d9bf0;cursor:pointer">Show more</div></div>
   <div class="row act" role="group" data-part="actions"><div>💬 3</div><div>🔁 1</div><div>♡ 16</div><div>📊 728</div><div>🔖</div></div>
  </div>
 </div></div></div></article>`;

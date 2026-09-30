@@ -215,6 +215,36 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     const debugHighlightStyle = 'background-color: rgba(255, 0, 0, 0.3) !important; border: 1px solid red !important; display: revert !important; visibility: revert !important;';
     const whiteboxStyle = 'background-color: white !important; border: 1px dashed #ccc !important; visibility: visible !important; overflow: hidden !important;';
 
+    // The white box hides the post's own nodes with this rule instead of
+    // clearing innerHTML. Rebuilding a post from an HTML string creates new
+    // nodes that X's React no longer tracks, so "Show more", like, reply and
+    // links all went dead after a reveal. Keeping the original nodes in
+    // place (just hidden) leaves every X handler working.
+    if (!document.getElementById('forcefield-whitebox-style')) {
+        const st = document.createElement('style');
+        st.id = 'forcefield-whitebox-style';
+        // Second rule: loose text directly inside the box (when the box is the
+        // text block itself) has no element to hide, so shrink it to nothing.
+        st.textContent = '[data-hidden-by-forcefield="whiteboxed"] > :not([data-forcefield-note]) { display: none !important; }\n' +
+            '[data-hidden-by-forcefield="whiteboxed"] { font-size: 0 !important; line-height: 0 !important; color: transparent !important; min-height: 36px !important; }';
+        (document.head || document.documentElement).appendChild(st);
+    }
+
+    // Undo a white box: drop the note, restore the exact style attribute.
+    function unbox(el) {
+        el.querySelectorAll(':scope > [data-forcefield-note]').forEach(n => n.remove());
+        if (el.dataset.originalStyleAttr) el.setAttribute('style', el.dataset.originalStyleAttr);
+        else el.removeAttribute('style');
+        delete el.dataset[hiddenMarker];
+        delete el.dataset.originalStyleAttr;
+        delete el.dataset.originalDisplay;
+        delete el.dataset.originalVisibility;
+        delete el.dataset.originalBorder;
+        delete el.dataset.originalBackgroundColor;
+        delete el.dataset.originalWidth;
+        delete el.dataset.originalHeight;
+    }
+
     // First, reset all previously affected elements.
     // NOTE: dataset.hiddenByForcefield serializes to the attribute
     // data-hidden-by-forcefield — the selector must use the kebab-case form
@@ -233,18 +263,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         // The per-property path below leaves the whitebox's !important rules
         // behind, which the next snapshot would then capture as "original".
         if (el.dataset.originalStyleAttr !== undefined) {
-            if (el.dataset.originalStyleAttr) el.setAttribute('style', el.dataset.originalStyleAttr);
-            else el.removeAttribute('style');
-            el.innerHTML = el.dataset.originalInnerHTML || '';
-            delete el.dataset[hiddenMarker];
-            delete el.dataset.originalStyleAttr;
-            delete el.dataset.originalDisplay;
-            delete el.dataset.originalVisibility;
-            delete el.dataset.originalBorder;
-            delete el.dataset.originalBackgroundColor;
-            delete el.dataset.originalWidth;
-            delete el.dataset.originalHeight;
-            delete el.dataset.originalInnerHTML;
+            unbox(el);
             return;
         }
 
@@ -267,13 +286,6 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         if (el.dataset.originalHeight) el.style.height = el.dataset.originalHeight;
         else el.style.height = '';
         
-        // Restore content ONLY if we whiteboxed it (originalInnerHTML saved).
-        // An unconditional assignment would wipe the content of elements that
-        // were merely hidden or highlighted.
-        if (el.dataset.originalInnerHTML !== undefined) {
-            el.innerHTML = el.dataset.originalInnerHTML;
-        }
-
         el.classList.remove(debugHighlightClass);
         delete el.dataset[hiddenMarker];
         delete el.dataset.originalStyleAttr;
@@ -283,7 +295,6 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         delete el.dataset.originalBackgroundColor;
         delete el.dataset.originalWidth;
         delete el.dataset.originalHeight;
-        delete el.dataset.originalInnerHTML;
 
        if (el.style.visibility === 'hidden' || el.style.display === 'none') {
             el.style.visibility = 'revert';
@@ -292,9 +303,9 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     });
 
     console.log(`[Forcefield Content Blocker (from SW)] Starting scan for ${blockListToUse.length} words/phrases. Debug: ${debugMode}`);
-    // Static snapshot, not the live HTMLCollection: whiteboxing a post clears
-    // its innerHTML, which would shrink a live list mid-loop and leave
-    // allElements[i] undefined (crashing the scan after the first match).
+    // Static snapshot, not the live HTMLCollection: if the page removes nodes
+    // mid-loop a live list shrinks and allElements[i] becomes undefined
+    // (this crashed the scan when white boxes used to clear innerHTML).
     const allElements = Array.from(document.body.getElementsByTagName('*'));
     let elementsAffected = 0;
 
@@ -394,7 +405,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         bar.dataset.forcefieldBar = '1';
         bar.style.cssText = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
         const rehide = () => {
-            bar.remove(); // before applyTreatment snapshots innerHTML
+            bar.remove(); // before applyTreatment boxes the post again
             delete el.dataset.forcefieldRevealed;
             applyTreatment(el);
         };
@@ -453,9 +464,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                 elementToHide.dataset.originalBackgroundColor = elementToHide.style.backgroundColor || '';
                 elementToHide.dataset.originalWidth = computedStyle.width;
                 elementToHide.dataset.originalHeight = computedStyle.height;
-                elementToHide.dataset.originalInnerHTML = elementToHide.innerHTML;
 
-                elementToHide.innerHTML = '';
                 elementToHide.style.cssText += whiteboxStyle;
                 elementToHide.style.width = elementToHide.dataset.originalWidth;
                 elementToHide.style.height = elementToHide.dataset.originalHeight;
@@ -470,8 +479,9 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                 // Click-to-reveal: show a small label; clicking the box restores
                 // the original content and styles and pins it as revealed.
                 const note = document.createElement('div');
+                note.dataset.forcefieldNote = '1';
                 note.textContent = 'Blocked by Forcefield - click to reveal';
-                note.style.cssText = 'color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; text-align: center !important; padding: 10px !important; user-select: none;';
+                note.style.cssText = 'color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; line-height: 16px !important; text-align: center !important; padding: 10px !important; user-select: none;';
                 elementToHide.appendChild(note);
                 elementToHide.style.cursor = 'pointer';
                 const onReveal = function (ev) {
@@ -480,22 +490,8 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                     elementToHide.removeEventListener('click', onReveal, true);
                     delete elementToHide._forcefieldOnReveal;
                     // Already restored (e.g. by a scan's reset): nothing to do.
-                    if (elementToHide.dataset.originalInnerHTML === undefined) return;
-                    elementToHide.innerHTML = elementToHide.dataset.originalInnerHTML;
-                    if (elementToHide.dataset.originalStyleAttr) {
-                        elementToHide.setAttribute('style', elementToHide.dataset.originalStyleAttr);
-                    } else {
-                        elementToHide.removeAttribute('style');
-                    }
-                    delete elementToHide.dataset[hiddenMarker];
-                    delete elementToHide.dataset.originalStyleAttr;
-                    delete elementToHide.dataset.originalDisplay;
-                    delete elementToHide.dataset.originalVisibility;
-                    delete elementToHide.dataset.originalBorder;
-                    delete elementToHide.dataset.originalBackgroundColor;
-                    delete elementToHide.dataset.originalWidth;
-                    delete elementToHide.dataset.originalHeight;
-                    delete elementToHide.dataset.originalInnerHTML;
+                    if (elementToHide.dataset[hiddenMarker] !== 'whiteboxed') return;
+                    unbox(elementToHide);
                     elementToHide.dataset.forcefieldRevealed = '1';
                     addRevealedBar(elementToHide);
                 };
@@ -523,8 +519,10 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 
     for (let i = allElements.length - 1; i >= 0; i--) {
         const element = allElements[i];
-        // Removed from the page by an earlier whitebox in this same scan.
         if (!element.isConnected || !element.style) continue;
+        // Already inside a white box from this scan: its nodes are only
+        // hidden, not removed, so don't box something inside the box.
+        if (element.parentElement && element.parentElement.closest('[data-hidden-by-forcefield="whiteboxed"]')) continue;
         // Skip logic considering whitebox mode
         if (element.style.display === 'none' && !element.dataset[hiddenMarker] && !debugMode) {
             continue;
