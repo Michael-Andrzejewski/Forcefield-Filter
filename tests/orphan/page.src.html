@@ -1,0 +1,81 @@
+<!doctype html><html><head><meta charset="utf-8"><title>orphan</title></head><body>
+<div id="feed"></div>
+<pre id="results"></pre>
+<script>
+// Fake chrome.runtime / chrome.storage that behave like Chrome's after an
+// extension reload: chrome.runtime.id becomes undefined and every API call
+// throws "Extension context invalidated".
+window.__alive = true;
+window.__sent = [];
+window.__errors = [];
+window.addEventListener('error', e => __errors.push(String(e.message)));
+function dead() { throw new Error('Extension context invalidated.'); }
+const answers = {
+  getGlobalScanningState: { isScanningGlobally: true },
+  isSiteAllowed: { isAllowed: true },
+  getActiveScanTabId: { activeScanTabId: 7 },
+  getCurrentTabId: { tabId: 7 },
+  newContentDetected: { accepted: true },
+  runBlocker: {}
+};
+const listeners = [];
+window.chrome = {
+  runtime: {
+    get id() { return __alive ? 'fakeextensionid' : undefined; },
+    lastError: undefined,
+    sendMessage(msg, cb) {
+      if (!__alive) dead();
+      __sent.push(msg.command);
+      setTimeout(() => cb && cb(answers[msg.command]), 5);
+    },
+    onMessage: { addListener(fn) { if (!__alive) dead(); listeners.push(fn); } }
+  },
+  storage: { local: {
+    get(keys, cb) { if (!__alive) dead(); setTimeout(() => cb({}), 1); },
+    set(obj, cb) { if (!__alive) dead(); cb && setTimeout(cb, 1); }
+  } }
+};
+</script>
+<script>/*CONTINUOUS_SCAN*/</script>
+<script>
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const results = { pass: 0, fail: 0, failures: [] };
+function check(c, name, d) { if (c) results.pass++; else { results.fail++; results.failures.push(name + (d ? ' :: ' + d : '')); } }
+function addTweet(text, withLike) {
+  const a = document.createElement('article');
+  a.setAttribute('data-testid', 'tweet');
+  a.innerHTML = `<div data-testid="User-Name"><span>Some One</span><span>@someone</span></div><div data-testid="tweetText">${text}</div>` +
+    (withLike ? '<div data-testid="like" role="button">like</div>' : '');
+  document.getElementById('feed').appendChild(a);
+  return a;
+}
+function flipVisibility() { document.dispatchEvent(new Event('visibilitychange')); }
+
+(async () => {
+  // Phase 1: alive. The script should start observing and send new tweets.
+  await sleep(300);
+  check(__sent.includes('getGlobalScanningState') && __sent.includes('getCurrentTabId'), 'alive: startup handshake ran', __sent.join(','));
+  addTweet('This is a brand new tweet with plenty of words to be scanned by the filter.');
+  await sleep(1500);
+  check(__sent.includes('newContentDetected'), 'alive: new tweet sent for scanning', __sent.join(','));
+  check(__sent.includes('runBlocker'), 'alive: blocker re-run requested');
+  flipVisibility(); await sleep(200);
+  check(__errors.length === 0, 'alive: no uncaught errors', __errors.join(' | '));
+
+  // Phase 2: the extension is reloaded. This copy is now orphaned.
+  __alive = false;
+  const sentBefore = __sent.length;
+  for (let i = 0; i < 5; i++) { flipVisibility(); await sleep(50); }
+  check(__errors.length === 0, 'orphan: switching tabs throws nothing', __errors.join(' | '));
+  for (let i = 0; i < 3; i++) addTweet('Another fresh tweet appearing after the reload, long enough to scan ' + i);
+  await sleep(2500);
+  check(__errors.length === 0, 'orphan: new tweets throw nothing', __errors.join(' | '));
+  check(__sent.length === sentBefore, 'orphan: sends nothing after shutdown', __sent.slice(sentBefore).join(','));
+  for (let i = 0; i < 3; i++) { flipVisibility(); await sleep(50); }
+  check(__errors.length === 0, 'orphan: still quiet on later tab switches', __errors.join(' | '));
+  check(window.forcefieldObserverInitialized === undefined, 'orphan: lets a re-injected copy start fresh');
+
+  document.getElementById('results').textContent = JSON.stringify(results);
+  document.title = 'DONE';
+})();
+</script></body></html>

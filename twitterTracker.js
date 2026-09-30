@@ -54,6 +54,9 @@
 
     function record(category, info, opts) {
         if (!info || (!info.text && !info.handle)) return; // nothing identifiable to store
+        // Orphaned by an extension reload: chrome.storage would throw
+        // "Extension context invalidated". The page needs a refresh to log again.
+        try { if (!chrome.runtime || !chrome.runtime.id) return; } catch (e) { return; }
         console.log(`[Forcefield] ${category}${opts && opts.remove ? ' (remove)' : ''}${opts && opts.removeByHandle ? ' (remove by handle)' : ''}:`, info.handle || info.displayName || '(unknown)', '-', (info.text || '').slice(0, 60));
         chrome.storage.local.get([STORAGE_KEY, 'tasteNewChars'], (res) => {
             const store = Object.assign({}, EMPTY, res[STORAGE_KEY] || {});

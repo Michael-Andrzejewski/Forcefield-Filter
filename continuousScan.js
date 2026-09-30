@@ -73,9 +73,35 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         return { texts: texts, keys: keys, sawTweets: sawTweets };
     }
 
+    // After the extension is reloaded or updated, the copy of this script
+    // already running in open tabs is orphaned: chrome.runtime.sendMessage
+    // still EXISTS but throws "Extension context invalidated". chrome.runtime.id
+    // is the reliable signal (it becomes undefined). The first time we see it,
+    // shut this orphan down so it stops touching the page and stops throwing;
+    // the freshly injected copy does the real work.
+    let orphaned = false;
     function canSendMessage() {
-        return chrome.runtime && chrome.runtime.sendMessage;
+        let alive = false;
+        try { alive = !!(chrome.runtime && chrome.runtime.id); } catch (e) { alive = false; }
+        if (!alive && !orphaned) shutDownOrphan();
+        return alive;
     }
+
+    function shutDownOrphan() {
+        orphaned = true;
+        isObserving = false;
+        if (observer) { observer.disconnect(); observer = null; }
+        clearTimeout(debounceTimer);
+        newTextBuffer = [];
+        newKeyBuffer = [];
+        if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange);
+        // Let a re-injected copy of this script initialize from scratch.
+        window.forcefieldObserverInitialized = undefined;
+        window.forcefieldMessageListenerAdded = undefined;
+        window.forcefieldVisibilityListenerAdded = undefined;
+        console.log('[Forcefield CS] Extension was reloaded; this old copy of the page script has shut down. Refresh the page if scanning stops.');
+    }
+    let onVisibilityChange = null;
 
     // Helper function to check if text has a minimum ratio of alphabetic characters
     function hasSufficientAlphaCharacters(text, minRatio) {
@@ -393,11 +419,8 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     }
 
     if(!window.forcefieldVisibilityListenerAdded) {
-        document.addEventListener('visibilitychange', () => {
-            if (!canSendMessage()) {
-                console.warn("[Forcefield CS] Context invalidated before visibility change handling.");
-                return;
-            }
+        onVisibilityChange = () => {
+            if (!canSendMessage()) return; // orphaned: canSendMessage already shut us down
             if (document.visibilityState === 'visible') {
                 chrome.runtime.sendMessage({ command: "getGlobalScanningState" }, (globalStateResponse) => {
                     if (chrome.runtime.lastError) {
@@ -456,7 +479,8 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                     stopObserverInternal();
                 }
             }
-        });
+        };
+        document.addEventListener('visibilitychange', onVisibilityChange);
         window.forcefieldVisibilityListenerAdded = true;
     }
     

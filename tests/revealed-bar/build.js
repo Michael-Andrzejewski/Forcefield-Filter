@@ -60,7 +60,8 @@ function page(title, body, script) {
 <script>
 // chrome.storage stub (the injected function runs in a content-script world).
 window.__store = {};
-window.chrome = { storage: { local: {
+window.__extAlive = true;
+window.chrome = { runtime: { get id() { return __extAlive ? 'fakeextensionid' : undefined; } }, storage: { local: {
   get(keys, cb) { const r = {}; (Array.isArray(keys)?keys:[keys]).forEach(k => { if (k in __store) r[k] = JSON.parse(JSON.stringify(__store[k])); }); setTimeout(() => cb(r), 0); },
   set(obj, cb) { Object.assign(__store, JSON.parse(JSON.stringify(obj))); cb && setTimeout(cb, 0); }
 }}};

@@ -1,5 +1,7 @@
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+window.__pageErrors = [];
+window.addEventListener('error', e => __pageErrors.push(String(e.message)));
 const results = { pass: 0, fail: 0, failures: [], crashes: [] };
 const TL = document.getElementById('timeline');
 const ORIGINAL = TL.innerHTML;
@@ -170,6 +172,19 @@ async function cycle(p, level, label) {
     scan(PHRASES.map((t, i) => ({ text: t, level: (i + round) % 7 })));
     check(bars().length === PHRASES.length, `[all r${round}] rescan keeps bars`, 'n=' + bars().length);
   }
+  // Extension reloaded while a post is revealed: verdict links must not
+  // throw or write anything (the storage API is gone).
+  reset();
+  scan([{ text: PHRASES[0], level: 5 }]);
+  click(boxed(0) && (boxed(0).firstElementChild || boxed(0)));
+  window.__extAlive = false;
+  const errsBefore = window.__pageErrors.length;
+  click(link(art(0), 'Bad block'));
+  await sleep(20);
+  check(window.__pageErrors.length === errsBefore, '[reload] verdict click after reload throws nothing', window.__pageErrors.slice(errsBefore).join(' | '));
+  check(!(__store.twitterActivity && (__store.twitterActivity.badBlock || []).length), '[reload] verdict after reload writes nothing');
+  window.__extAlive = true;
+
   // Final visual state for the screenshot: mixed levels, some revealed.
   reset();
   scan(PHRASES.map((t, i) => ({ text: t, level: [0, 2, 0, 2, 3, 5][i] })));

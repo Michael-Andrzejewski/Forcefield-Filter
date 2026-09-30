@@ -371,6 +371,9 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         const timeEl = scope.querySelector('a[href*="/status/"] time');
         if (timeEl && timeEl.parentElement && timeEl.parentElement.href) url = timeEl.parentElement.href;
         if (!text && !handle) return;
+        // Clicked on a post revealed before the extension was reloaded: the
+        // storage API is gone and would throw "Extension context invalidated".
+        try { if (!chrome.runtime || !chrome.runtime.id) { console.log('[Forcefield] Extension was reloaded; refresh the page to record this verdict.'); return; } } catch (e) { return; }
         const keyOf = e => e.url || `${e.handle || ''}::${(e.text || '').slice(0, 80)}`;
         const k = keyOf({ text, handle, url });
         chrome.storage.local.get(['twitterActivity', 'tasteNewChars'], (res) => {
