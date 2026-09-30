@@ -342,22 +342,76 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 
     // Apply the active mode (highlight / whitebox / hide) to one element.
     // Shared by the direct match and its same-cell reply siblings.
-    // After click-to-reveal: a small button at the end of the revealed post
-    // that puts the white box back.
-    function addHideAgainButton(el) {
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.textContent = 'Hide again (Forcefield)';
-        btn.style.cssText = 'display: block !important; margin: 4px 0 8px auto !important; padding: 2px 10px !important; font-family: sans-serif !important; font-size: 12px !important; color: #999 !important; background: transparent !important; border: 1px solid #999 !important; border-radius: 10px !important; cursor: pointer !important;';
-        btn.addEventListener('click', function (ev) {
-            // Stop X from treating this as a click on the post (opening it).
-            ev.preventDefault();
-            ev.stopImmediatePropagation();
-            btn.remove(); // before applyTreatment snapshots innerHTML
+    // Log the user's verdict on a block into twitterActivity (same store and
+    // entry shape as twitterTracker.js). goodBlock joins the "DO flag"
+    // examples in the taste context, badBlock joins the "do NOT flag" ones.
+    function recordBlockVerdict(el, category) {
+        const article = el.matches('article') ? el : (el.closest('article') || el.querySelector('article'));
+        const scope = article || el;
+        const textEl = scope.querySelector('[data-testid="tweetText"]');
+        const text = (textEl ? textEl.innerText : scope.innerText || '').trim().slice(0, 1000);
+        let displayName = '', handle = '', url = '';
+        const nameEl = scope.querySelector('[data-testid="User-Name"]');
+        if (nameEl) {
+            const lines = (nameEl.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
+            displayName = lines[0] || '';
+            handle = lines.find(l => l.startsWith('@')) || '';
+        }
+        const timeEl = scope.querySelector('a[href*="/status/"] time');
+        if (timeEl && timeEl.parentElement && timeEl.parentElement.href) url = timeEl.parentElement.href;
+        if (!text && !handle) return;
+        const keyOf = e => e.url || `${e.handle || ''}::${(e.text || '').slice(0, 80)}`;
+        const k = keyOf({ text, handle, url });
+        chrome.storage.local.get(['twitterActivity', 'tasteNewChars'], (res) => {
+            const store = Object.assign({ liked: [], notInterested: [], muted: [], blocked: [] }, res.twitterActivity || {});
+            // A new verdict replaces the opposite one on the same post.
+            const other = category === 'goodBlock' ? 'badBlock' : 'goodBlock';
+            store[other] = (store[other] || []).filter(e => keyOf(e) !== k);
+            const list = (store[category] || []).filter(e => keyOf(e) !== k);
+            list.push({ text, displayName, handle, url, ts: new Date().toISOString() });
+            store[category] = list.slice(-500);
+            chrome.storage.local.set({
+                twitterActivity: store,
+                tasteNewChars: (res.tasteNewChars || 0) + text.length + handle.length
+            });
+            console.log(`[Forcefield] ${category}:`, handle || displayName || '(unknown)', '-', text.slice(0, 60));
+        });
+    }
+
+    // After click-to-reveal: one small line of text at the end of the post.
+    // "Hide again" re-boxes it; "Good block" logs the verdict and re-boxes;
+    // "Bad block" logs the verdict and leaves the post shown.
+    function addRevealedBar(el) {
+        const bar = document.createElement('div');
+        bar.style.cssText = 'font-family: sans-serif !important; font-size: 11px !important; color: #999 !important; padding: 2px 16px 6px !important; user-select: none;';
+        const rehide = () => {
+            bar.remove(); // before applyTreatment snapshots innerHTML
             delete el.dataset.forcefieldRevealed;
             applyTreatment(el);
-        }, true);
-        el.appendChild(btn);
+        };
+        const actions = [
+            ['Hide again', rehide],
+            ['Good block', () => { recordBlockVerdict(el, 'goodBlock'); rehide(); }],
+            ['Bad block', () => { recordBlockVerdict(el, 'badBlock'); link3.textContent = 'Bad block (noted)'; }]
+        ];
+        let link3;
+        actions.forEach(([label, fn], i) => {
+            if (i > 0) bar.appendChild(document.createTextNode(' · '));
+            const a = document.createElement('span');
+            a.textContent = label;
+            a.style.cssText = 'cursor: pointer !important; text-decoration: underline dotted !important;';
+            a.addEventListener('click', function (ev) {
+                // Stop X from treating this as a click on the post (opening it).
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                fn();
+            }, true);
+            bar.appendChild(a);
+            if (i === 2) link3 = a;
+        });
+        // Swallow clicks on the gaps between links too.
+        bar.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); });
+        el.appendChild(bar);
     }
 
     function applyTreatment(elementToHide) {
@@ -428,7 +482,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                     delete elementToHide.dataset.originalHeight;
                     delete elementToHide.dataset.originalInnerHTML;
                     elementToHide.dataset.forcefieldRevealed = '1';
-                    addHideAgainButton(elementToHide);
+                    addRevealedBar(elementToHide);
                 };
                 elementToHide._forcefieldOnReveal = onReveal;
                 elementToHide.addEventListener('click', onReveal, true); // capture: run before X's own click handlers
@@ -909,7 +963,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({
                 summary: tasteSummary || null,
                 placeholder: TASTE_SUMMARY_PLACEHOLDER,
-                likedCount: (activity.liked || []).length,
+                likedCount: likedActivityOf(activity).length,
                 dislikedCount: dislikedActivityOf(activity).length,
                 newChars: tasteNewChars || 0,
                 triggerChars: TASTE_SUMMARY_TRIGGER_CHARS,
@@ -1006,8 +1060,16 @@ A previous summary of the user's dislikes (important to block)
 
 // All negative-signal entries (not interested + muted + blocked), oldest
 // first, so slice(-n) yields the n most recent across the three lists.
+// Includes goodBlock: posts the user confirmed Forcefield was right to hide.
 function dislikedActivityOf(activity) {
-    return [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || [])]
+    return [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || []), ...(activity.goodBlock || [])]
+        .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+}
+
+// All positive-signal entries: likes plus badBlock (posts the user said
+// Forcefield should not have hidden), oldest first.
+function likedActivityOf(activity) {
+    return [...(activity.liked || []), ...(activity.badBlock || [])]
         .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
 }
 
@@ -1023,7 +1085,7 @@ async function getTasteContext() {
     const { tasteSummary, twitterActivity } =
         await chrome.storage.local.get(['tasteSummary', 'twitterActivity']);
     const activity = twitterActivity || {};
-    const liked = activity.liked || [];
+    const liked = likedActivityOf(activity);
     const disliked = dislikedActivityOf(activity);
     if (!(tasteSummary && tasteSummary.text) && liked.length + disliked.length === 0) return '';
 
@@ -1033,11 +1095,11 @@ async function getTasteContext() {
     const parts = ["This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes."];
     parts.push('---\n' + ((tasteSummary && tasteSummary.text) || TASTE_SUMMARY_PLACEHOLDER) + '\n---');
     if (liked.length > 0) {
-        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED (do NOT flag content like this):\n` +
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED or said Forcefield wrongly hid (do NOT flag content like this):\n` +
             formatActivityExamples(liked, TASTE_RECENT_EXAMPLES));
     }
     if (disliked.length > 0) {
-        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, disliked.length)} most recent posts the user marked not interested, muted, or blocked (DO flag content like this):\n` +
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, disliked.length)} most recent posts the user marked not interested, muted, blocked, or confirmed Forcefield was right to hide (DO flag content like this):\n` +
             formatActivityExamples(disliked, TASTE_RECENT_EXAMPLES));
     }
     return parts.join('\n\n');
@@ -1050,7 +1112,7 @@ async function updateTasteSummary({ force } = { force: false }) {
     const { tasteSummary, tasteNewChars, twitterActivity } =
         await chrome.storage.local.get(['tasteSummary', 'tasteNewChars', 'twitterActivity']);
     const activity = twitterActivity || {};
-    const liked = activity.liked || [];
+    const liked = likedActivityOf(activity);
     const disliked = dislikedActivityOf(activity);
     const total = liked.length + disliked.length;
     if (total < TASTE_SUMMARY_MIN_EXAMPLES) {
@@ -1100,7 +1162,7 @@ A previous summary of the user's dislikes (important to block)
 
 Replace the parenthesized placeholders with real observations, using several bullets per category when the data supports it and naming the strongest, most consistent signals first. Keep a placeholder bullet only where there is genuinely no data yet. Be concrete enough that another AI could judge an unseen post from the profile alone. The whole profile MUST be between 300 and 1000 words. Return ONLY the profile text, with no extra title, preamble, or commentary.`;
 
-    const userText = `Previous profile:\n---\n${previousSummary}\n---\n\nRecent posts the user LIKED:\n${fmtAll(liked)}\n\nRecent posts the user marked not interested / muted / blocked:\n${fmtAll(disliked)}`;
+    const userText = `Previous profile:\n---\n${previousSummary}\n---\n\nRecent posts the user LIKED or said Forcefield wrongly hid:\n${fmtAll(liked)}\n\nRecent posts the user marked not interested / muted / blocked, or confirmed Forcefield was right to hide:\n${fmtAll(disliked)}`;
 
     console.log(`[Forcefield BG] Updating taste summary from ${liked.length} liked / ${disliked.length} disliked posts via ${model}...`);
     try {

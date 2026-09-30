@@ -341,14 +341,16 @@ if (saveGeminiApiKeyButton) {
 // --- Twitter Activity Log ---
 const copyTwitterLogButton = document.getElementById('copyTwitterLogButton');
 const clearTwitterLogButton = document.getElementById('clearTwitterLogButton');
-const EMPTY_TWITTER_ACTIVITY = { liked: [], notInterested: [], muted: [], blocked: [] };
+const EMPTY_TWITTER_ACTIVITY = { liked: [], notInterested: [], muted: [], blocked: [], goodBlock: [], badBlock: [] };
 
 function formatTwitterActivity(store) {
     const cats = [
         ['liked', 'LIKED'],
         ['notInterested', 'NOT INTERESTED'],
         ['muted', 'MUTED'],
-        ['blocked', 'BLOCKED']
+        ['blocked', 'BLOCKED'],
+        ['goodBlock', 'GOOD BLOCK (Forcefield was right)'],
+        ['badBlock', 'BAD BLOCK (Forcefield was wrong)']
     ];
     const out = [];
     cats.forEach(([key, label]) => {
