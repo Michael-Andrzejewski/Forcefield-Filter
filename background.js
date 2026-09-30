@@ -382,8 +382,17 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     // "Hide again" re-boxes it; "Good block" logs the verdict and re-boxes;
     // "Bad block" logs the verdict and leaves the post shown.
     function addRevealedBar(el) {
+        // Attach to the enclosing post, not the boxed element itself: the
+        // boxed element is often one of X's flex ROWS (name row, avatar +
+        // text row), which would put the line off to the right and wrap it.
+        // Every X container is a flex column, so the post's last child sits
+        // full-width at the bottom.
+        const host = (el.closest && el.closest('article')) || el;
+        const old = host.querySelector(':scope > [data-forcefield-bar]');
+        if (old) old.remove();
         const bar = document.createElement('div');
-        bar.style.cssText = 'font-family: sans-serif !important; font-size: 11px !important; color: #999 !important; padding: 2px 16px 6px !important; user-select: none;';
+        bar.dataset.forcefieldBar = '1';
+        bar.style.cssText = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
         const rehide = () => {
             bar.remove(); // before applyTreatment snapshots innerHTML
             delete el.dataset.forcefieldRevealed;
@@ -411,7 +420,13 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         });
         // Swallow clicks on the gaps between links too.
         bar.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); });
-        el.appendChild(bar);
+        host.appendChild(bar);
+        // Line the links up with the post text column (right of the avatar).
+        const tt = host.querySelector('[data-testid="tweetText"]');
+        if (tt) {
+            const pad = tt.getBoundingClientRect().left - bar.getBoundingClientRect().left;
+            if (pad > 0) bar.style.setProperty('padding-left', pad + 'px', 'important');
+        }
     }
 
     function applyTreatment(elementToHide) {
