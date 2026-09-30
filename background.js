@@ -342,6 +342,24 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 
     // Apply the active mode (highlight / whitebox / hide) to one element.
     // Shared by the direct match and its same-cell reply siblings.
+    // After click-to-reveal: a small button at the end of the revealed post
+    // that puts the white box back.
+    function addHideAgainButton(el) {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = 'Hide again (Forcefield)';
+        btn.style.cssText = 'display: block !important; margin: 4px 0 8px auto !important; padding: 2px 10px !important; font-family: sans-serif !important; font-size: 12px !important; color: #999 !important; background: transparent !important; border: 1px solid #999 !important; border-radius: 10px !important; cursor: pointer !important;';
+        btn.addEventListener('click', function (ev) {
+            // Stop X from treating this as a click on the post (opening it).
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            btn.remove(); // before applyTreatment snapshots innerHTML
+            delete el.dataset.forcefieldRevealed;
+            applyTreatment(el);
+        }, true);
+        el.appendChild(btn);
+    }
+
     function applyTreatment(elementToHide) {
         // The user clicked "reveal" on this element — leave it alone until
         // X's virtualized timeline unmounts it.
@@ -410,6 +428,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                     delete elementToHide.dataset.originalHeight;
                     delete elementToHide.dataset.originalInnerHTML;
                     elementToHide.dataset.forcefieldRevealed = '1';
+                    addHideAgainButton(elementToHide);
                 };
                 elementToHide._forcefieldOnReveal = onReveal;
                 elementToHide.addEventListener('click', onReveal, true); // capture: run before X's own click handlers
