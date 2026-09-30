@@ -1094,31 +1094,48 @@ const TASTE_SUMMARY_PLACEHOLDER = `A previous summary of the user's likes (impor
 - (example user list)
 - (example tone and discourse quality)
 - Other notes and observations from their liked posts
+- Forcefield corrections: (what the posts the user said the filter should NOT have hidden have in common)
 
 A previous summary of the user's dislikes (important to block)
 - (example topic list)
 - (example user list)
 - (example tone and discourse quality)
-- Other notes and observations from their disliked, muted, or not-interested posts`;
+- Other notes and observations from their disliked, muted, or not-interested posts
+- Forcefield confirmations: (what the posts the user confirmed the filter was RIGHT to hide have in common)`;
 
-// All negative-signal entries (not interested + muted + blocked), oldest
-// first, so slice(-n) yields the n most recent across the three lists.
-// Includes goodBlock: posts the user confirmed Forcefield was right to hide.
-function dislikedActivityOf(activity) {
-    return [...(activity.notInterested || []), ...(activity.muted || []), ...(activity.blocked || []), ...(activity.goodBlock || [])]
+// Where each entry came from, shown to the model as a tag on every example.
+// A Forcefield verdict is narrower than a like or mute: "Bad block" means
+// "this isn't what the filter is for", not "I enjoyed this"; "Good block" is
+// direct confirmation of a filter decision. The model needs to tell them apart.
+const ACTIVITY_TAGS = {
+    liked: 'liked',
+    badBlock: 'Forcefield verdict: should NOT have been hidden',
+    notInterested: 'not interested',
+    muted: 'muted',
+    blocked: 'blocked',
+    goodBlock: 'Forcefield verdict: RIGHT to hide'
+};
+
+function taggedActivity(activity, categories) {
+    return categories
+        .flatMap(cat => (activity[cat] || []).map(e => Object.assign({}, e, { tag: ACTIVITY_TAGS[cat] })))
         .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
 }
 
-// All positive-signal entries: likes plus badBlock (posts the user said
-// Forcefield should not have hidden), oldest first.
+// All negative-signal entries, oldest first, so slice(-n) yields the n most
+// recent across the lists. Includes goodBlock verdicts.
+function dislikedActivityOf(activity) {
+    return taggedActivity(activity, ['notInterested', 'muted', 'blocked', 'goodBlock']);
+}
+
+// All positive-signal entries, oldest first. Includes badBlock verdicts.
 function likedActivityOf(activity) {
-    return [...(activity.liked || []), ...(activity.badBlock || [])]
-        .sort((a, b) => String(a.ts || '').localeCompare(String(b.ts || '')));
+    return taggedActivity(activity, ['liked', 'badBlock']);
 }
 
 function formatActivityExamples(list, n) {
     return list.slice(-n)
-        .map(e => `- ${(e.handle || e.displayName || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+        .map(e => `- ${e.tag ? '[' + e.tag + '] ' : ''}${(e.handle || e.displayName || '(unknown)')}: ${(e.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
         .join('\n');
 }
 
@@ -1138,11 +1155,11 @@ async function getTasteContext() {
     const parts = ["This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes."];
     parts.push('---\n' + ((tasteSummary && tasteSummary.text) || TASTE_SUMMARY_PLACEHOLDER) + '\n---');
     if (liked.length > 0) {
-        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts the user LIKED or said Forcefield wrongly hid (do NOT flag content like this):\n` +
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, liked.length)} most recent posts on the do-NOT-flag side (do NOT flag content like this). Each is tagged [liked] or [Forcefield verdict: should NOT have been hidden]; a verdict means the filter got this kind of post wrong, which is the most direct correction you have:\n` +
             formatActivityExamples(liked, TASTE_RECENT_EXAMPLES));
     }
     if (disliked.length > 0) {
-        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, disliked.length)} most recent posts the user marked not interested, muted, blocked, or confirmed Forcefield was right to hide (DO flag content like this):\n` +
+        parts.push(`The ${Math.min(TASTE_RECENT_EXAMPLES, disliked.length)} most recent posts on the DO-flag side (DO flag content like this). Each is tagged [not interested], [muted], [blocked] or [Forcefield verdict: RIGHT to hide]; a verdict confirms a decision the filter already made:\n` +
             formatActivityExamples(disliked, TASTE_RECENT_EXAMPLES));
     }
     return parts.join('\n\n');
@@ -1196,16 +1213,20 @@ A previous summary of the user's likes (important not to block)
 - (bullets on accounts/users they engage with)
 - (bullets on the tone and discourse quality they prefer)
 - Other notes and observations from their liked posts
+- Forcefield corrections: (what the posts the user said the filter should NOT have hidden have in common)
 
 A previous summary of the user's dislikes (important to block)
 - (bullets on topics they avoid)
 - (bullets on accounts/users they avoid)
 - (bullets on the tone and discourse quality they avoid)
 - Other notes and observations from their disliked, muted, or not-interested posts
+- Forcefield confirmations: (what the posts the user confirmed the filter was RIGHT to hide have in common)
+
+Every activity entry is tagged with its source. [liked], [not interested], [muted] and [blocked] are ordinary actions on X. [Forcefield verdict: ...] entries are the user's direct judgement of the filter's own decisions: "should NOT have been hidden" means the post is not what the filter is for (not necessarily that they enjoyed it), and "RIGHT to hide" confirms a hide. Use verdicts for the two Forcefield bullets, and weigh them heavily for where the line between hide and keep falls.
 
 Replace the parenthesized placeholders with real observations, using several bullets per category when the data supports it and naming the strongest, most consistent signals first. Keep a placeholder bullet only where there is genuinely no data yet. Be concrete enough that another AI could judge an unseen post from the profile alone. The whole profile MUST be between 300 and 1000 words. Return ONLY the profile text, with no extra title, preamble, or commentary.`;
 
-    const userText = `Previous profile:\n---\n${previousSummary}\n---\n\nRecent posts the user LIKED or said Forcefield wrongly hid:\n${fmtAll(liked)}\n\nRecent posts the user marked not interested / muted / blocked, or confirmed Forcefield was right to hide:\n${fmtAll(disliked)}`;
+    const userText = `Previous profile:\n---\n${previousSummary}\n---\n\nRecent do-NOT-block side (tagged [liked] or [Forcefield verdict: should NOT have been hidden]):\n${fmtAll(liked)}\n\nRecent DO-block side (tagged [not interested], [muted], [blocked] or [Forcefield verdict: RIGHT to hide]):\n${fmtAll(disliked)}`;
 
     console.log(`[Forcefield BG] Updating taste summary from ${liked.length} liked / ${disliked.length} disliked posts via ${model}...`);
     try {
