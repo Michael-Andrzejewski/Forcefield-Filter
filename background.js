@@ -392,20 +392,50 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     // After click-to-reveal: one small line of text at the end of the post.
     // "Hide again" re-boxes it; "Good block" logs the verdict and re-boxes;
     // "Bad block" logs the verdict and leaves the post shown.
+    // True when appending a child to `node` puts it BELOW the existing
+    // content, full width: block layout or a top-to-bottom flex column.
+    function stacksVertically(node) {
+        const cs = window.getComputedStyle(node);
+        if (cs.display === 'block' || cs.display === 'flow-root' || cs.display === 'list-item') return true;
+        return (cs.display === 'flex' || cs.display === 'inline-flex') && cs.flexDirection === 'column';
+    }
+
+    // Where the line goes, measured rather than assumed. X's containers are
+    // usually columns, but some are rows (e.g. the post's outer box on a
+    // single-post page), and a line added to a row sits beside the post and
+    // squeezes it. Try the post itself, then down its chain of single-child
+    // wrappers, then directly after the post in its parent.
+    function placeBar(post, bar) {
+        if (stacksVertically(post)) { post.appendChild(bar); return; }
+        let node = post;
+        for (let depth = 0; depth < 4; depth++) {
+            const kids = [...node.children].filter(c => !c.dataset.forcefieldBar);
+            if (kids.length !== 1) break;
+            node = kids[0];
+            if (stacksVertically(node)) { node.appendChild(bar); return; }
+        }
+        if (post.parentElement && stacksVertically(post.parentElement)) {
+            post.parentElement.insertBefore(bar, post.nextSibling);
+            return;
+        }
+        post.appendChild(bar); // last resort
+    }
+
     function addRevealedBar(el) {
         // Attach to the enclosing post, not the boxed element itself: the
         // boxed element is often one of X's flex ROWS (name row, avatar +
         // text row), which would put the line off to the right and wrap it.
-        // Every X container is a flex column, so the post's last child sits
-        // full-width at the bottom.
         const host = (el.closest && el.closest('article')) || el;
-        const old = host.querySelector(':scope > [data-forcefield-bar]');
-        if (old) old.remove();
+        if (el._forcefieldBar) el._forcefieldBar.remove();
         const bar = document.createElement('div');
         bar.dataset.forcefieldBar = '1';
-        bar.style.cssText = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
+        el._forcefieldBar = bar;
+        // contain: inline-size stops the one-line text from ever widening
+        // (or, in a row, stealing width from) the container it sits in.
+        bar.style.cssText = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; min-width: 0 !important; max-width: 100% !important; contain: inline-size !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
         const rehide = () => {
             bar.remove(); // before applyTreatment boxes the post again
+            delete el._forcefieldBar;
             delete el.dataset.forcefieldRevealed;
             applyTreatment(el);
         };
@@ -431,7 +461,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         });
         // Swallow clicks on the gaps between links too.
         bar.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); });
-        host.appendChild(bar);
+        placeBar(host, bar);
         // Line the links up with the post text column (right of the avatar).
         const tt = host.querySelector('[data-testid="tweetText"]');
         if (tt) {
@@ -481,7 +511,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                 const note = document.createElement('div');
                 note.dataset.forcefieldNote = '1';
                 note.textContent = 'Blocked by Forcefield - click to reveal';
-                note.style.cssText = 'color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; line-height: 16px !important; text-align: center !important; padding: 10px !important; user-select: none;';
+                note.style.cssText = 'display: block !important; flex: 1 1 auto !important; width: 100% !important; box-sizing: border-box !important; color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; line-height: 16px !important; text-align: center !important; padding: 10px !important; user-select: none;';
                 elementToHide.appendChild(note);
                 elementToHide.style.cursor = 'pointer';
                 const onReveal = function (ev) {

@@ -25,6 +25,11 @@ article{display:flex;flex-direction:column;padding:12px 16px 0;cursor:pointer}
 .act{justify-content:space-between;max-width:425px;margin:12px 0;color:#536471}
 .caret{margin-left:auto;color:#536471}
 .name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* Post detail page: X lays the post's outer container out as a ROW. */
+.detail article{flex-direction:row} .detail article > div{flex:1 1 0px}
+/* Worst case: three nested rows before the content, forcing the line after the post. */
+.allrow article, .allrow article > div, .allrow article > div > div{flex-direction:row}
+.allrow article > div, .allrow article > div > div, .allrow article > div > div > div{flex:1 1 0px}
 `;
 
 function tweet(id, name, handle, textHtml) {
@@ -67,10 +72,10 @@ ${script}
 </script></body></html>`;
 }
 
-function timeline(width, items) {
+function timeline(width, items, cls) {
   let y = 0, html = '';
   items.forEach((t, i) => { html += `<div data-testid="cellInnerDiv" style="transform:translateY(${y}px)" data-cell="${i}"><div><div>${t}</div></div></div>`; y += 0; });
-  return `<div id="timeline" style="width:${width}px">${html}</div>`;
+  return `<div id="timeline" class="${cls}" style="width:${width}px">${html}</div>`;
 }
 
 // Cells are absolutely positioned; lay them out after render like X's virtualizer.
@@ -80,7 +85,10 @@ function layout(){ let y=0; document.querySelectorAll('[data-testid=cellInnerDiv
 
 
 const cells = posts.map((p, i) => tweet(1000 + i, p[0], p[1], p[2]));
-for (const w of [600, 380]) {
-  fs.writeFileSync(path.join(out, `suite_${w}.html`), page(`suite ${w}`, timeline(w, cells), layoutJs + fs.readFileSync(path.join(__dirname, 'runner.src.js'), 'utf8')));
+for (const f of fs.readdirSync(out)) if (/^suite_.*\.html$/.test(f)) fs.unlinkSync(path.join(out, f));
+for (const [variant, widths] of [['feed', [600, 380]], ['detail', [600, 380]], ['allrow', [600]]]) {
+  for (const w of widths) {
+    fs.writeFileSync(path.join(out, `suite_${variant}_${w}.html`), page(`${variant} ${w}`, timeline(w, cells, variant), layoutJs + fs.readFileSync(path.join(__dirname, 'runner.src.js'), 'utf8')));
+  }
 }
 console.log('built, fn length', fn.length);

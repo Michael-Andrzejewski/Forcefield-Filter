@@ -19,6 +19,8 @@ function reset() {
   document.querySelectorAll('[data-testid=tweet-text-show-more-link]').forEach(b => b.addEventListener('click', e => { if (e.currentTarget.__reactFiber$test) { __showMore++; e.stopPropagation(); } }));
   document.querySelectorAll('[data-testid=tweet-text-show-more-link]').forEach(b => { b.__reactFiber$test = { alive: true }; });
   layout();
+  // Original geometry of every post, for the "reveal must not resize" checks.
+  window.__geom = [...document.querySelectorAll('article')].map(a => { const t = a.querySelector('[data-testid=tweetText]').getBoundingClientRect(); return { w: t.width, l: t.left, aw: a.getBoundingClientRect().width }; });
 }
 function checkReactAlive(p, node, tag) {
   const a = art(p);
@@ -54,27 +56,35 @@ function click(el) { if (!el) { results.fail++; results.failures.length < 60 && 
 const art = p => document.querySelector(`article[data-post="${1000 + p}"]`);
 const boxed = p => { const a = art(p); if (!a) return null; return a.matches('[data-hidden-by-forcefield=whiteboxed]') ? a : a.querySelector('[data-hidden-by-forcefield=whiteboxed]'); };
 const bars = () => document.querySelectorAll('[data-forcefield-bar]');
-const link = (a, label) => [...a.querySelectorAll('[data-forcefield-bar] span')].find(s => s.textContent.startsWith(label));
+// The line lives inside the post, or directly after it when every
+// container inside the post lays out in a row.
+function barOf(p) {
+  const a = art(p); if (!a) return null;
+  const inside = a.querySelector('[data-forcefield-bar]'); if (inside) return inside;
+  const next = a.nextElementSibling; return next && next.dataset.forcefieldBar ? next : null;
+}
+const link = (a, label) => { const b = barOf(+a.dataset.post - 1000); return b && [...b.querySelectorAll('span')].find(s => s.textContent.startsWith(label)); };
 
 function checkBarGeometry(p, tag) {
   const a = art(p);
-  const bar = a && a.querySelector(':scope > [data-forcefield-bar]');
-  check(!!bar, tag + ' bar is direct child of article');
+  const bar = barOf(p);
+  check(!!bar, tag + ' bar belongs to this post');
   if (!bar) return;
-  check(a.lastElementChild === bar, tag + ' bar is last child of article');
   const br = bar.getBoundingClientRect();
   const ar = a.getBoundingClientRect();
+  // Revealing must never resize or shift the post itself.
+  const g = __geom[p], t = a.querySelector('[data-testid=tweetText]').getBoundingClientRect();
+  check(Math.abs(t.width - g.w) < 0.5 && Math.abs(t.left - g.l) < 0.5, tag + ' post text keeps its original width and position', `was ${g.l}+${g.w} now ${t.left}+${t.width}`);
+  check(Math.abs(ar.width - g.aw) < 0.5, tag + ' post keeps its original width', `was ${g.aw} now ${ar.width}`);
+  check(br.left <= t.left + 1 && br.right >= t.right - 1, tag + ' bar spans under the whole text column', `bar ${br.left}-${br.right} text ${t.left}-${t.right}`);
   let maxBottom = -Infinity;
   for (const d of a.querySelectorAll('*')) {
-    if (bar.contains(d)) continue;
+    if (bar.contains(d) || d.contains(bar)) continue; // the line itself, or a container holding it
     const r = d.getBoundingClientRect();
     if (r.width && r.height) maxBottom = Math.max(maxBottom, r.bottom);
   }
   check(br.top >= maxBottom - 1, tag + ' bar sits below all post content', `barTop=${br.top} contentBottom=${maxBottom}`);
   check(br.height <= 24, tag + ' bar is one short line', `h=${br.height}`);
-  const cs = getComputedStyle(a);
-  const innerLeft = ar.left + parseFloat(cs.paddingLeft), innerRight = ar.right - parseFloat(cs.paddingRight);
-  check(Math.abs(br.left - innerLeft) <= 1 && Math.abs(br.right - innerRight) <= 1, tag + ' bar spans post width', `bar ${br.left}-${br.right} inner ${innerLeft}-${innerRight}`);
   check(bar.scrollWidth <= bar.clientWidth + 1, tag + ' all three links fit (no clipping)', `scroll=${bar.scrollWidth} client=${bar.clientWidth}`);
   const spans = [...bar.querySelectorAll('span')];
   check(spans.length === 3, tag + ' three links', 'n=' + spans.length);
@@ -120,7 +130,7 @@ async function cycle(p, level, label) {
   check(window.__opened === 0, tag + ' Hide again did not open post');
 
   click((boxed(p) && (boxed(p).firstElementChild || boxed(p))));
-  check(art(p).textContent === origText + 'Hide again · Good block · Bad block', tag + ' second reveal restores exact text', JSON.stringify(art(p).textContent.slice(-60)));
+  check(art(p).textContent.replace('Hide again · Good block · Bad block', '') === origText, tag + ' second reveal restores exact text', JSON.stringify(art(p).textContent.slice(-60)));
   checkBarGeometry(p, tag + ' reveal2');
   checkReactAlive(p, ttNode, tag + ' reveal2');
 
