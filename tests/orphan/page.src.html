@@ -16,7 +16,8 @@ const answers = {
   getActiveScanTabId: { activeScanTabId: 7 },
   getCurrentTabId: { tabId: 7 },
   newContentDetected: { accepted: true },
-  runBlocker: {}
+  runBlocker: {},
+  claimScan: { start: true }
 };
 const listeners = [];
 window.chrome = {
@@ -54,7 +55,7 @@ function flipVisibility() { document.dispatchEvent(new Event('visibilitychange')
 (async () => {
   // Phase 1: alive. The script should start observing and send new tweets.
   await sleep(300);
-  check(__sent.includes('getGlobalScanningState') && __sent.includes('getCurrentTabId'), 'alive: startup handshake ran', __sent.join(','));
+  check(__sent[0] === 'claimScan', 'alive: page asks the background whether to scan', __sent.join(','));
   addTweet('This is a brand new tweet with plenty of words to be scanned by the filter.');
   await sleep(1500);
   check(__sent.includes('newContentDetected'), 'alive: new tweet sent for scanning', __sent.join(','));

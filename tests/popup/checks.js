@@ -17,6 +17,9 @@
     check(!document.getElementById('xEngineSelect'), `[${scenario}] old separate Engine on X dropdown is gone`);
 
     if (scenario === 'haiku') {
+        const spend = [...document.querySelectorAll('.spend-by-model')].map(e => e.textContent);
+        check(spend.length === 2 && spend.every(t => t.startsWith('By model since ') && t.includes('Jev by TypeSafe: $0.0021 over 30 calls · $0.0003 per 100 tweets (700 tweets)') && t.includes('Claude Haiku 4.5: $0.31 over 42 calls · $0.051 per 100 tweets (610 tweets)')), '[haiku] per-model spend shown, cheapest per tweet first', JSON.stringify(spend));
+        check(spend[0].indexOf('Jev') < spend[0].indexOf('Haiku'), '[haiku] Jev listed before Haiku');
         check(main.value === 'claude-haiku-4-5' && shown().every(s => !s), '[haiku] Haiku selected, threshold hidden', main.value + ' ' + shown());
         main.value = 'jev-latest'; main.dispatchEvent(new Event('change')); await sleep(50);
         check(__areas.sync.selectedAiModel === 'jev-latest', '[haiku] choosing Jev saves it', JSON.stringify(__areas.sync));

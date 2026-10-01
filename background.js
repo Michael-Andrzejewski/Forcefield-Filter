@@ -38,6 +38,65 @@ chrome.runtime.onInstalled.addListener(() => {
     });
 });
 
+// --- Page script registration -------------------------------------------
+// continuousScan.js used to be injected only when the popup started a scan,
+// the user switched tabs, or the scan tab changed URL. A refresh, a new tab
+// opened on X, or a browser restart left the page with no script at all
+// until the popup was opened ("needs waking up"). Registering it with the
+// browser loads it on every allowed page; on load it asks claimScanForTab()
+// whether to start.
+const CONTINUOUS_SCRIPT_ID = 'forcefield-continuous-scan';
+const DEFAULT_ALLOWED_SITES = ['twitter.com', 'x.com', 'quora.com'];
+
+// "x.com" -> ["*://x.com/*", "*://*.x.com/*"]. Tolerates pasted URLs
+// ("https://x.com/home"); drops anything that isn't a hostname. An empty
+// list means "all sites", matching isSiteAllowed().
+function matchPatternsForSites(sites) {
+    if (!sites || sites.length === 0) return ['http://*/*', 'https://*/*'];
+    const hosts = sites
+        .map(s => String(s).trim().toLowerCase().replace(/^[a-z]+:\/\//, '').split(/[\/?#:]/)[0])
+        .filter(h => /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h));
+    return [...new Set(hosts)].flatMap(h => [`*://${h}/*`, `*://*.${h}/*`]);
+}
+
+let registrationChain = Promise.resolve();
+function syncContinuousScanRegistration() {
+    // Serialized: two overlapping calls would both try to register the id.
+    registrationChain = registrationChain.then(async () => {
+        const { allowedSites } = await chrome.storage.sync.get(['allowedSites']);
+        const matches = matchPatternsForSites(allowedSites === undefined ? DEFAULT_ALLOWED_SITES : allowedSites);
+        const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [CONTINUOUS_SCRIPT_ID] });
+        if (matches.length === 0) {
+            if (existing.length) await chrome.scripting.unregisterContentScripts({ ids: [CONTINUOUS_SCRIPT_ID] });
+            return;
+        }
+        const def = { id: CONTINUOUS_SCRIPT_ID, js: ['continuousScan.js'], matches, runAt: 'document_idle', persistAcrossSessions: true };
+        if (existing.length) await chrome.scripting.updateContentScripts([def]);
+        else await chrome.scripting.registerContentScripts([def]);
+        console.log('[Forcefield BG] Page script registered for', matches.join(' '));
+    }).catch(e => console.warn('[Forcefield BG] Could not register page script:', e));
+    return registrationChain;
+}
+syncContinuousScanRegistration();
+chrome.runtime.onStartup.addListener(() => { syncContinuousScanRegistration(); });
+chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'sync' && changes.allowedSites) syncContinuousScanRegistration();
+});
+
+// A page script just loaded (or its tab came to the front) and asks whether
+// to scan. Yes when scanning is on, the site is allowed, and the tab is the
+// one in front; that tab then becomes the scan tab.
+async function claimScanForTab(tab) {
+    if (!tab || !tab.id) return { start: false, reason: 'no tab' };
+    const { isScanning, activeScanTabId } = await chrome.storage.local.get(['isScanning', 'activeScanTabId']);
+    if (!isScanning) return { start: false, reason: 'scanning is off' };
+    if (!(await isSiteAllowed(tab.url))) return { start: false, reason: 'site not allowed' };
+    if (!tab.active) return { start: false, reason: 'tab not in front' };
+    if (activeScanTabId && activeScanTabId !== tab.id) stopObserverInTab(activeScanTabId);
+    if (activeScanTabId !== tab.id) await chrome.storage.local.set({ activeScanTabId: tab.id });
+    return { start: true };
+}
+
 // Load activeScanTabId on startup
 chrome.storage.local.get(['activeScanTabId'], (result) => {
     if (result.activeScanTabId) {
@@ -1023,6 +1082,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             chrome.storage.local.get(['isScanning'], (result) => {
                 sendResponse({ isScanningGlobally: result.isScanning });
             });
+        } else if (request.command === "claimScan") {
+            sendResponse(await claimScanForTab(sender.tab));
         } else if (request.command === "getCurrentTabId") {
             sendResponse({ tabId: sender.tab.id });
         } else if (request.command === "isSiteAllowed") {
@@ -1743,7 +1804,8 @@ async function handleNewContent(text, tabId, tweets) {
             maxTokens: 4096,
             anthropicApiKey: allConfig.anthropicApiKey,
             geminiApiKey: allConfig.geminiApiKey,
-            cacheSystem: true
+            cacheSystem: true,
+            tweets: Array.isArray(tweets) ? tweets.length : 0 // for the per-100-tweets cost comparison
         });
         const suggestions = extractNegativeTags(aiResponseContent);
 

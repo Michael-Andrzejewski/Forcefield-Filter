@@ -4,6 +4,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 status=0
 node "$D/taste-context/test.js" || status=1
 node "$D/trigger/test.js" || status=1
+node "$D/wake/test.js" || status=1
 node "$D/jev/test.js" || status=1
 node "$D/jev/routing.test.js" || status=1
 "$D/popup/run.sh" || status=1

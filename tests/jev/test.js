@@ -17,7 +17,7 @@ function sandbox({ spendLog = [], limits } = {}) {
         console: { log() {}, warn() {} }, Date, Math, JSON, Promise,
         self: {},
         chrome: { storage: {
-            local: { get: async k => ({ aiSpendLog: local.aiSpendLog }), set: async o => Object.assign(local, o) },
+            local: { get: async k => Object.fromEntries((Array.isArray(k) ? k : [k]).filter(x => x in local).map(x => [x, JSON.parse(JSON.stringify(local[x]))])), set: async o => Object.assign(local, JSON.parse(JSON.stringify(o))) },
             sync: { get: async k => sync }
         } },
         fetch: async (url, opts) => { fetchCalls.push({ url, opts, body: JSON.parse(opts.body) }); return reply(JSON.parse(opts.body)); }
@@ -115,6 +115,31 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
         let err = null;
         try { await b.j.classifyTweetsWithJev({ tweets: tweets(1), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' }); } catch (e) { err = e; }
         check(err && /budget/i.test(err.message) && b.fetchCalls.length === 0, 'spend limit reached -> no request sent', err && err.message);
+    }
+    // 7. Per-model cost tracking: entries tagged, running totals, comparison text.
+    {
+        const s = sandbox();
+        s.setReply(answering([0.1]));
+        await s.j.classifyTweetsWithJev({ tweets: tweets(30), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' }); // 25 + 5
+        await new Promise(r => setTimeout(r, 20));
+        const log = s.local.aiSpendLog;
+        check(log.length === 2 && log.every(e => e.model === 'jev-latest'), 'spend entries tagged with the model', JSON.stringify(log));
+        check(log.map(e => e.tweets).join(',') === '25,5', 'spend entries record tweets covered', log.map(e => e.tweets).join(','));
+        const t = s.local.aiSpendTotals && s.local.aiSpendTotals.models['jev-latest'];
+        check(t && t.calls === 2 && t.tweets === 30 && Math.abs(t.cost - 2 * 1000 * 0.042 / 1e6) < 1e-12, 'running Jev totals', JSON.stringify(t));
+        check(typeof s.local.aiSpendTotals.since === 'number', 'totals remember when tracking started');
+        const box = { self: {}, console: { log() {}, warn() {} } };
+        vm.createContext(box);
+        vm.runInContext(fs.readFileSync(path.join(root, 'llm.js'), 'utf8'), box);
+        const lines = box.self.ForcefieldLLM.formatSpendByModel({ since: 0, models: {
+            'claude-haiku-4-5': { cost: 0.30, calls: 40, tweetCost: 0.30, tweets: 600 },
+            'jev-latest': { cost: 0.0021, calls: 30, tweetCost: 0.0021, tweets: 700 },
+            'gemini-2.5-flash-lite': { cost: 0.01, calls: 2, tweetCost: 0, tweets: 0 }
+        } });
+        check(lines[0].startsWith('Jev by TypeSafe: $0.0021 over 30 calls · $0.0003 per 100 tweets (700 tweets)'), 'comparison line for Jev, cheapest first', lines[0]);
+        check(lines[1].startsWith('Claude Haiku 4.5: $0.30 over 40 calls · $0.05 per 100 tweets (600 tweets)'), 'comparison line for Haiku', lines[1]);
+        check(lines[2] === 'Gemini 2.5 Flash-Lite: $0.01 over 2 calls', 'model with no tweet data shows cost only, listed last', lines[2]);
+        check(box.self.ForcefieldLLM.formatSpendByModel(undefined).length === 0, 'no spend yet -> no lines');
     }
     console.log(`jev: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

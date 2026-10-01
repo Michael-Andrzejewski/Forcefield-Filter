@@ -267,6 +267,14 @@ async function loadSpendInfo() {
         const detail = document.getElementById('budgetSpendDetail');
         if (detail) detail.textContent = summary + '. Calls pause when a limit is hit and resume as spend ages out.';
 
+        // Per-model totals (never age out), cheapest per 100 tweets first.
+        const { aiSpendTotals } = await chrome.storage.local.get(['aiSpendTotals']);
+        const lines = formatSpendByModel(aiSpendTotals);
+        const since = aiSpendTotals && aiSpendTotals.since
+            ? new Date(aiSpendTotals.since).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+        const byModel = lines.length ? `By model since ${since}:\n` + lines.join('\n') : '';
+        document.querySelectorAll('.spend-by-model').forEach(el => { el.textContent = byModel; });
+
         const hourlyInput = document.getElementById('hourlyLimitInput');
         const dailyInput = document.getElementById('dailyLimitInput');
         // Don't clobber a value the user is mid-typing.

@@ -9,7 +9,7 @@ mkdir -p "$D/out"
 status=0
 for sc in haiku xengine xengine-llm jev; do
   case $sc in
-    haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{}}' ;;
+    haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{"aiSpendTotals":{"since":1790800000000,"models":{"claude-haiku-4-5":{"cost":0.31,"calls":42,"tweetCost":0.31,"tweets":610},"jev-latest":{"cost":0.0021,"calls":30,"tweetCost":0.0021,"tweets":700}}}}}' ;;
     xengine) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5","xEngine":"jev"},"local":{}}' ;;
     xengine-llm) seed='{"sync":{"selectedAiModel":"claude-sonnet-4-6","xEngine":"llm"},"local":{}}' ;;
     jev) seed='{"sync":{"selectedAiModel":"jev-latest","jevThreshold":0.8},"local":{}}' ;;

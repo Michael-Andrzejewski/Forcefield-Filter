@@ -70,7 +70,7 @@ async function callJev({ request, typesafeApiKey, fetchImpl }) {
     }
     const result = await response.json();
     const u = result.usage || {};
-    recordSpend(JEV_MODEL, { input: u.input_tokens || 0, output: 0 })
+    recordSpend(JEV_MODEL, { input: u.input_tokens || 0, output: 0 }, Object.keys(request.questions || {}).length)
         .catch(e => console.warn('[Forcefield] Failed to record Jev spend:', e));
     return { answers: result.answers || {}, usage: u, model: result.model };
 }

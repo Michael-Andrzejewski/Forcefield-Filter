@@ -124,22 +124,6 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         return (alphaChars.length / text.length) >= minRatio;
     }
 
-    // Helper function to check if the current page is on an allowed site.
-    // This is an async function that returns a promise.
-    function isCurrentSiteAllowed() {
-        if (!canSendMessage()) return Promise.resolve(false); // Can't check if runtime is gone
-        return new Promise((resolve) => {
-            chrome.runtime.sendMessage({ command: "isSiteAllowed" }, (response) => {
-                if (chrome.runtime.lastError) {
-                    console.warn('[Forcefield CS] Error checking if site is allowed:', chrome.runtime.lastError.message);
-                    resolve(false); // Fail safely
-                } else {
-                    resolve(response && response.isAllowed);
-                }
-            });
-        });
-    }
-
     function performInitialScan() {
         if (!document.body) {
             console.warn('[Forcefield CS] Initial scan aborted: document.body not available.');
@@ -439,61 +423,35 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         }
     }
 
+    // Ask the background whether this tab should scan: yes when scanning is
+    // on, the site is allowed, and this tab is the one in front (it then
+    // becomes the scan tab). Used on page load and when the tab comes back
+    // to the front. Replaces a four-message handshake that only started
+    // scanning on a tab the background had ALREADY picked, so a refresh or a
+    // new X tab stayed idle until the popup was opened.
+    function claimScanAndStart(label) {
+        if (!canSendMessage()) return; // orphaned: canSendMessage already shut us down
+        chrome.runtime.sendMessage({ command: "claimScan" }, (response) => {
+            if (chrome.runtime.lastError) {
+                console.warn(`[Forcefield CS] ${label}: could not reach the background:`, chrome.runtime.lastError.message);
+                return;
+            }
+            if (response && response.start) {
+                if (!isObserving) {
+                    console.log(`[Forcefield CS] ${label}: scanning this tab.`);
+                    startObserverInternal();
+                }
+            } else {
+                if (isObserving) stopObserverInternal();
+                console.log(`[Forcefield CS] ${label}: not scanning (${response && response.reason}).`);
+            }
+        });
+    }
+
     if(!window.forcefieldVisibilityListenerAdded) {
         onVisibilityChange = () => {
-            if (!canSendMessage()) return; // orphaned: canSendMessage already shut us down
             if (document.visibilityState === 'visible') {
-                chrome.runtime.sendMessage({ command: "getGlobalScanningState" }, (globalStateResponse) => {
-                    if (chrome.runtime.lastError) {
-                        console.warn('[Forcefield CS] Visibility: Error querying global state:', chrome.runtime.lastError.message); return;
-                    }
-                    if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getGlobalScanningState."); return; }
-
-                    if (globalStateResponse && globalStateResponse.isScanningGlobally) {
-                        // NEW: Check if the site is allowed before proceeding
-                        isCurrentSiteAllowed().then(isAllowed => {
-                            if (!isAllowed) {
-                                console.log('[Forcefield CS] Visibility: Site not allowed, ensuring observer is stopped.');
-                                if (isObserving) stopObserverInternal();
-                                return;
-                            }
-
-                            // Site is allowed, continue with previous logic
-                            chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, (activeTabResponse) => {
-                                if (chrome.runtime.lastError) {
-                                    console.warn('[Forcefield CS] Visibility: Error getting active tab:', chrome.runtime.lastError.message); return;
-                                }
-                                if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getActiveScanTabId."); return; }
-
-                                chrome.runtime.sendMessage({ command: "getCurrentTabId" }, (currentTabResponse) => {
-                                    if (chrome.runtime.lastError || !currentTabResponse || !currentTabResponse.tabId) {
-                                        console.warn('[Forcefield CS] Visibility: Error getting current tab ID'); return;
-                                    }
-                                    if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after getCurrentTabId."); return; }
-
-                                    const currentTabId = currentTabResponse.tabId;
-                                    const activeScanTabIdFromBg = activeTabResponse && activeTabResponse.activeScanTabId;
-                                    if (activeScanTabIdFromBg === currentTabId) {
-                                        if (!isObserving) {
-                                            console.log('[Forcefield CS] Visibility: Tab is active and site is allowed, starting observer.');
-                                            startObserverInternal();
-                                        }
-                                    } else {
-                                        if (isObserving) {
-                                            console.log('[Forcefield CS] Visibility: Tab not active scan tab, stopping observer.');
-                                            stopObserverInternal();
-                                        }
-                                    }
-                                });
-                            });
-                        });
-                    } else {
-                        if (isObserving) {
-                            console.log('[Forcefield CS] Visibility: Global scan off, stopping observer.');
-                            stopObserverInternal();
-                        }
-                    }
-                });
+                claimScanAndStart('Visibility');
             } else if (document.visibilityState === 'hidden') {
                 if (isObserving) {
                     console.log('[Forcefield CS] Visibility: Tab became hidden, stopping observer.');
@@ -504,48 +462,9 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         document.addEventListener('visibilitychange', onVisibilityChange);
         window.forcefieldVisibilityListenerAdded = true;
     }
-    
-    if (!isObserving) { 
-        if (canSendMessage()) {
-            chrome.runtime.sendMessage({ command: "getGlobalScanningState" }, (globalStateResponse) => {
-                if (chrome.runtime.lastError) {
-                    console.warn('[Forcefield CS] Initial: Error querying global state:', chrome.runtime.lastError.message); return;
-                }
-                if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getGlobalScanningState."); return; }
 
-                if (globalStateResponse && globalStateResponse.isScanningGlobally) {
-                    // NEW: Check if the site is allowed before proceeding
-                    isCurrentSiteAllowed().then(isAllowed => {
-                        if (!isAllowed) {
-                            console.log('[Forcefield CS] Initial: Site not on allowed list. Observer will not start.');
-                            return;
-                        }
-
-                        // Site is allowed, continue with previous logic
-                        chrome.runtime.sendMessage({ command: "getActiveScanTabId" }, (activeTabResponse) => {
-                            if (chrome.runtime.lastError) {
-                                console.warn('[Forcefield CS] Initial: Error getting active tab:', chrome.runtime.lastError.message); return;
-                            }
-                            if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getActiveScanTabId."); return; }
-
-                            chrome.runtime.sendMessage({ command: "getCurrentTabId" }, (currentTabResponse) => {
-                                if (chrome.runtime.lastError || !currentTabResponse || !currentTabResponse.tabId) {
-                                    console.warn('[Forcefield CS] Initial: Error getting current tab ID'); return;
-                                }
-                                if (!canSendMessage()) { console.warn("[Forcefield CS] Context invalidated after initial getCurrentTabId."); return; }
-
-                                if (activeTabResponse && activeTabResponse.activeScanTabId === currentTabResponse.tabId) {
-                                    console.log('[Forcefield CS] Initial: This tab should be active and site is allowed. Starting observer.');
-                                    startObserverInternal();
-                                }
-                            });
-                        });
-                    });
-                } 
-            });
-        } else {
-            console.warn("[Forcefield CS] Context invalidated, cannot perform initial state check.");
-        }
+    if (!isObserving && document.visibilityState === 'visible') {
+        claimScanAndStart('Page load');
     }
 
 } else {

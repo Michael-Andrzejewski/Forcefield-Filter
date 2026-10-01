@@ -78,7 +78,9 @@ async function enforceBudget() {
     }
 }
 
-async function recordSpend(model, usage) {
+// `tweets`: how many tweets the call covered (0 when unknown, e.g. a page
+// that isn't X). Recorded so models can be compared per 100 tweets.
+async function recordSpend(model, usage, tweets = 0) {
     const pricing = MODEL_PRICING[model];
     if (!pricing || !usage) return;
     const effectiveInputTokens =
@@ -87,8 +89,35 @@ async function recordSpend(model, usage) {
         0.10 * (usage.cacheRead || 0);
     const cost = (effectiveInputTokens * pricing.input + (usage.output || 0) * pricing.output) / 1e6;
     const { log } = await getSpendState();
-    log.push({ ts: Date.now(), cost: cost });
-    await chrome.storage.local.set({ aiSpendLog: log });
+    log.push({ ts: Date.now(), cost: cost, model: model, tweets: tweets });
+    // Per-model running totals. Unlike aiSpendLog (24h window, for the
+    // budget) these never age out, so the comparison builds up over days.
+    const { aiSpendTotals } = await chrome.storage.local.get(['aiSpendTotals']);
+    const totals = aiSpendTotals || { since: Date.now(), models: {} };
+    const t = totals.models[model] || (totals.models[model] = { cost: 0, calls: 0, tweetCost: 0, tweets: 0 });
+    t.cost += cost;
+    t.calls += 1;
+    if (tweets > 0) { t.tweetCost += cost; t.tweets += tweets; }
+    await chrome.storage.local.set({ aiSpendLog: log, aiSpendTotals: totals });
+}
+
+// One line per model, cheapest per tweet first, e.g.
+// "Jev by TypeSafe: $0.0012 over 3 calls · $0.0004 per 100 tweets (300 tweets)"
+function formatSpendByModel(totals) {
+    const models = (totals && totals.models) || {};
+    const label = id => SELECTABLE_AI_MODELS[id] ? SELECTABLE_AI_MODELS[id].replace(/\s*\(.*\)$/, '') : id;
+    // Two significant digits below 10 cents ($0.0003, $0.0021, $0.05), never
+    // scientific notation.
+    const money = v => '$' + (v >= 0.1 ? v.toFixed(2) : v <= 0 ? '0'
+        : v.toFixed(Math.min(12, 1 - Math.floor(Math.log10(v)))).replace(/0+$/, '').replace(/\.$/, ''));
+    const per100 = t => (t.tweets > 0 ? t.tweetCost / t.tweets * 100 : Infinity);
+    return Object.keys(models)
+        .sort((a, b) => per100(models[a]) - per100(models[b]))
+        .map(id => {
+            const t = models[id];
+            const tweetPart = t.tweets > 0 ? ` · ${money(per100(t))} per 100 tweets (${t.tweets} tweets)` : '';
+            return `${label(id)}: ${money(t.cost)} over ${t.calls} call${t.calls === 1 ? '' : 's'}${tweetPart}`;
+        });
 }
 // --- End cost guard ------------------------------------------------------
 
@@ -98,7 +127,7 @@ function providerForModel(model) {
 
 // Returns the model's raw text output as a string. Throws on a missing key or a
 // non-OK HTTP response (callers already wrap these in try/catch).
-async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false }) {
+async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false, tweets = 0 }) {
     // Guard against a stale/retired model id lingering in storage (e.g. an old
     // claude-3-* selection from before the model list was modernized).
     if (model === JEV_MODEL_ID) {
@@ -122,7 +151,7 @@ async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApi
     }
     // Record actual spend from the response's usage metadata (fire-and-forget;
     // a failed write should never fail the call itself).
-    recordSpend(model, result.usage).catch(e => console.warn('[Forcefield] Failed to record AI spend:', e));
+    recordSpend(model, result.usage, tweets).catch(e => console.warn("[Forcefield] Failed to record AI spend:", e));
     return result.text;
 }
 
@@ -239,7 +268,7 @@ function extractNegativeTags(text) {
 // other classic scripts in the same realm; this just makes the surface explicit).
 self.ForcefieldLLM = {
     AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
-    JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX,
+    JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX, formatSpendByModel,
     extractNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING
 };
 
