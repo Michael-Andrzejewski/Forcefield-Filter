@@ -192,7 +192,8 @@ The output should be ready to be used directly as the new system prompt.`;
 
 
 // We need the actual function that does the blocking
-function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) {
+function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, allowedPostKeys) {
+    const allowedKeySet = new Set(allowedPostKeys || []);
     function normalizeApostrophes(str) {
         if (!str) return str;
         return str.replace(/[\u2018\u2019\u0060\u00B4]/g, "'");
@@ -356,9 +357,38 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
     // Log the user's verdict on a block into twitterActivity (same store and
     // entry shape as twitterTracker.js). goodBlock joins the "DO flag"
     // examples in the taste context, badBlock joins the "do NOT flag" ones.
-    function recordBlockVerdict(el, category) {
+    // The post an element belongs to (X: its <article>), and stable keys for
+    // it: the status link when there is one, and the normalized post text
+    // (which also matches the same post on its own page, in a quote, or
+    // after X re-renders it).
+    function postScopeOf(el) {
         const article = el.matches('article') ? el : (el.closest('article') || el.querySelector('article'));
-        const scope = article || el;
+        return article || el;
+    }
+    function postKeysOf(scope) {
+        const keys = [];
+        const timeEl = scope.querySelector('a[href*="/status/"] time');
+        const href = timeEl && timeEl.parentElement && timeEl.parentElement.href;
+        if (href) keys.push('url:' + href.split(/[?#]/)[0]);
+        const textEl = scope.querySelector('[data-testid="tweetText"]');
+        const t = normalizeText(textEl ? textEl.textContent : ownTextOf(scope)).slice(0, 300);
+        if (t.length >= 8) keys.push('text:' + t);
+        return keys;
+    }
+    // Text of a post without Forcefield's own additions (the line of links,
+    // the white box note), so keys match before and after a reveal.
+    function ownTextOf(scope) {
+        let t = scope.textContent || '';
+        scope.querySelectorAll('[data-forcefield-bar], [data-forcefield-note]').forEach(n => { t = t.replace(n.textContent, ''); });
+        return t;
+    }
+    function isAllowedPost(el) {
+        if (!allowedKeySet.size) return false;
+        return postKeysOf(postScopeOf(el)).some(k => allowedKeySet.has(k));
+    }
+
+    function recordBlockVerdict(el, category) {
+        const scope = postScopeOf(el);
         const textEl = scope.querySelector('[data-testid="tweetText"]');
         const text = (textEl ? textEl.innerText : scope.innerText || '').trim().slice(0, 1000);
         let displayName = '', handle = '', url = '';
@@ -371,12 +401,16 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
         const timeEl = scope.querySelector('a[href*="/status/"] time');
         if (timeEl && timeEl.parentElement && timeEl.parentElement.href) url = timeEl.parentElement.href;
         if (!text && !handle) return;
+        const postKeys = postKeysOf(scope);
+        // Everything in the post, including a quoted post: a flagged phrase
+        // found anywhere in here is what got this post boxed.
+        const postNorm = normalizeText(ownTextOf(scope));
         // Clicked on a post revealed before the extension was reloaded: the
         // storage API is gone and would throw "Extension context invalidated".
         try { if (!chrome.runtime || !chrome.runtime.id) { console.log('[Forcefield] Extension was reloaded; refresh the page to record this verdict.'); return; } } catch (e) { return; }
         const keyOf = e => e.url || `${e.handle || ''}::${(e.text || '').slice(0, 80)}`;
         const k = keyOf({ text, handle, url });
-        chrome.storage.local.get(['twitterActivity', 'tasteNewChars'], (res) => {
+        chrome.storage.local.get(['twitterActivity', 'tasteNewChars', 'allowedPosts', 'blockList'], (res) => {
             const store = Object.assign({ liked: [], notInterested: [], muted: [], blocked: [] }, res.twitterActivity || {});
             // A new verdict replaces the opposite one on the same post.
             const other = category === 'goodBlock' ? 'badBlock' : 'goodBlock';
@@ -384,10 +418,42 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
             const list = (store[category] || []).filter(e => keyOf(e) !== k);
             list.push({ text, displayName, handle, url, ts: new Date().toISOString() });
             store[category] = list.slice(-500);
-            chrome.storage.local.set({
+            const update = {
                 twitterActivity: store,
                 tasteNewChars: (res.tasteNewChars || 0) + text.length + handle.length
-            });
+            };
+
+            // Bad block must stick: allow this post from now on, and drop the
+            // flagged phrases that matched it so they stop hiding it (or its
+            // quotes) anywhere. Good block undoes the allow.
+            const sameEntry = p => (p.keys || []).some(key => postKeys.includes(key));
+            const previous = (res.allowedPosts || []).filter(sameEntry);
+            let allowed = (res.allowedPosts || []).filter(p => !sameEntry(p));
+            let blockList = res.blockList || [];
+            if (category === 'badBlock') {
+                const removed = blockList.filter(item => {
+                    const n = normalizeText(item.text);
+                    return n && postNorm.includes(n);
+                });
+                blockList = blockList.filter(item => !removed.includes(item));
+                // Remember what was removed so a later Good block can restore it.
+                const keepRemoved = previous.flatMap(p => p.removed || []);
+                allowed.push({ keys: postKeys, removed: keepRemoved.concat(removed), ts: Date.now() });
+                console.log(`[Forcefield] Bad block: post allowed, ${removed.length} flagged phrase(s) removed.`);
+            } else {
+                // Good block after a Bad block: put the phrases back so the
+                // post stays boxed after X re-renders it.
+                const have = new Set(blockList.map(i => (i.text || '').toLowerCase()));
+                for (const item of previous.flatMap(p => p.removed || [])) {
+                    if (!have.has((item.text || '').toLowerCase())) { blockList = blockList.concat([item]); have.add((item.text || '').toLowerCase()); }
+                }
+            }
+            update.blockList = blockList;
+            update.allowedPosts = allowed.slice(-2000);
+            for (const key of postKeys) {
+                if (category === 'badBlock') allowedKeySet.add(key); else allowedKeySet.delete(key);
+            }
+            chrome.storage.local.set(update);
             console.log(`[Forcefield] ${category}:`, handle || displayName || '(unknown)', '-', text.slice(0, 60));
         });
     }
@@ -653,6 +719,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
                 }
 
                 for (const target of targets) {
+                    if (isAllowedPost(target)) continue; // user said "Bad block" on this post
                     applyTreatment(target);
                 }
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
@@ -668,15 +735,18 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode) 
 }
 
 // Centralized function to trigger the blocking on the page
-function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
+async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
     if (!tabId) {
         console.error("[Forcefield Background] triggerPageBlock: Missing tabId.");
         return;
     }
+    // Posts the user marked "Bad block": never box these again.
+    const { allowedPosts } = await chrome.storage.local.get(['allowedPosts']);
+    const allowedKeys = (allowedPosts || []).flatMap(p => p.keys || []);
     chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: actualContentBlockingFunction,
-            args: [blockList, debugMode, whiteboxMode] // Pass whiteboxMode
+            args: [blockList || [], debugMode, whiteboxMode, allowedKeys]
         }).catch(err => {
             if (err.message.includes("No tab with id") || 
                 err.message.includes("Cannot access") ||

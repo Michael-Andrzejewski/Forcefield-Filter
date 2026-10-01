@@ -172,6 +172,66 @@ async function cycle(p, level, label) {
     scan(PHRASES.map((t, i) => ({ text: t, level: (i + round) % 7 })));
     check(bars().length === PHRASES.length, `[all r${round}] rescan keeps bars`, 'n=' + bars().length);
   }
+  // Bad block must stick across X re-rendering the post, and a later
+  // Good block must undo it. bgScan() mirrors triggerPageBlock: it runs the
+  // blocker with whatever blockList / allowedPosts are actually in storage.
+  const bgScan = () => {
+    const keys = (__store.allowedPosts || []).flatMap(p => p.keys || []);
+    try { actualContentBlockingFunction(__store.blockList || [], false, true, keys); }
+    catch (e) { results.crashes.push(String(e && e.stack || e)); results.fail++; }
+    layout();
+  };
+  const rerender = () => { TL.innerHTML = ORIGINAL; layout(); }; // X rebuilds the posts; storage survives
+  const boxedCount = () => PHRASES.filter((_, q) => boxed(q)).length;
+  for (const P of [3, 0, 4]) {
+    const tag = `[sticky post${P}]`;
+    reset();
+    __store.blockList = PHRASES.map(t => ({ text: t.slice(0, 40), level: 5, source: 'ai_continuous' }))
+      .concat([{ text: 'an unrelated phrase from elsewhere', level: 5, source: 'ai_continuous' }]);
+    bgScan();
+    check(boxedCount() === PHRASES.length, tag + ' all posts boxed at start', 'n=' + boxedCount());
+    click(boxed(P) && (boxed(P).firstElementChild || boxed(P)));
+    click(link(art(P), 'Bad block'));
+    await sleep(20);
+    const bl = __store.blockList || [];
+    check(!bl.some(i => PHRASES[P].startsWith(i.text)), tag + ' Bad block removed the matching phrase', JSON.stringify(bl.map(i => i.text.slice(0, 15))));
+    check(bl.length === PHRASES.length, tag + ' other phrases kept', 'n=' + bl.length);
+    const entry = (__store.allowedPosts || [])[0] || {};
+    check((entry.keys || []).some(k => k.startsWith('url:')) && (entry.keys || []).some(k => k.startsWith('text:')), tag + ' post remembered by link and text', JSON.stringify(entry.keys));
+    check(!(entry.keys || []).some(k => k.includes('hideagain')), tag + ' key excludes Forcefield\'s own line');
+
+    rerender(); bgScan();
+    check(!boxed(P), tag + ' stays shown after X re-renders');
+    check(boxedCount() === PHRASES.length - 1, tag + ' other posts still boxed after re-render', 'n=' + boxedCount());
+
+    // The AI flags the same post again later (e.g. after a page refresh).
+    __store.blockList = __store.blockList.concat([{ text: PHRASES[P].slice(0, 40), level: 5, source: 'ai_continuous' }]);
+    rerender(); bgScan();
+    check(!boxed(P), tag + ' stays shown even when the AI re-flags it');
+
+    // Same post on its own page or in another context: different link, same text.
+    rerender();
+    const a = art(P).querySelector('a[href*="/status/"]'); if (a) a.href = 'https://x.com/other/status/999' + P;
+    bgScan();
+    check(!boxed(P), tag + ' recognised by its text when the link differs');
+
+    // Change of mind in the same session: Good block restores the phrases.
+    __store.blockList = __store.blockList.filter(i => !PHRASES[P].startsWith(i.text)); // drop the re-flag
+    rerender(); bgScan();
+    const errsBefore = window.__pageErrors.length;
+    reset(); // fresh page
+    __store.blockList = PHRASES.map(t => ({ text: t.slice(0, 40), level: 5, source: 'ai_continuous' }));
+    bgScan();
+    click(boxed(P) && (boxed(P).firstElementChild || boxed(P)));
+    click(link(art(P), 'Bad block')); await sleep(20);
+    click(link(art(P), 'Good block')); await sleep(20);
+    check(!(__store.allowedPosts || []).length, tag + ' Good block removes the allow', JSON.stringify(__store.allowedPosts));
+    check((__store.blockList || []).some(i => PHRASES[P].startsWith(i.text)), tag + ' Good block restores the removed phrase');
+    rerender(); bgScan();
+    check(!!boxed(P), tag + ' boxed again after Good block and a re-render');
+    check(window.__pageErrors.length === errsBefore, tag + ' no page errors', window.__pageErrors.slice(errsBefore).join(' | '));
+  }
+
   // Extension reloaded while a post is revealed: verdict links must not
   // throw or write anything (the storage API is gone).
   reset();
