@@ -24,7 +24,7 @@ const DEFAULT_AI_MODEL = 'claude-haiku-4-5';
 // AI Suggestions, the autonomous agent) uses DEFAULT_AI_MODEL.
 const JEV_MODEL_ID = 'jev-latest';
 const SELECTABLE_AI_MODELS = Object.assign({}, AVAILABLE_AI_MODELS, {
-    [JEV_MODEL_ID]: 'Jev by TypeSafe (X only)'
+    [JEV_MODEL_ID]: 'Jev by TypeSafe'
 });
 // The text model to use for a saved selection.
 function textModelFor(model) {
