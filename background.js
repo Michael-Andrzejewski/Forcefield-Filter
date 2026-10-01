@@ -741,8 +741,11 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
         return;
     }
     // Posts the user marked "Bad block": never box these again.
-    const { allowedPosts } = await chrome.storage.local.get(['allowedPosts']);
-    const allowedKeys = (allowedPosts || []).flatMap(p => p.keys || []);
+    // Bad block verdicts from before allowedPosts existed (2.7.1 and earlier)
+    // only live in twitterActivity.badBlock; their status links count too.
+    const { allowedPosts, twitterActivity } = await chrome.storage.local.get(['allowedPosts', 'twitterActivity']);
+    const allowedKeys = (allowedPosts || []).flatMap(p => p.keys || [])
+        .concat(((twitterActivity && twitterActivity.badBlock) || []).filter(e => e.url).map(e => 'url:' + e.url.split(/[?#]/)[0]));
     chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: actualContentBlockingFunction,
