@@ -1,5 +1,5 @@
 // Provider abstraction (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM)
-importScripts('llm.js');
+importScripts('llm.js', 'jev.js');
 
 
 // AI Model Configuration now lives in llm.js (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL).
@@ -1004,7 +1004,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.command === "newContentDetected") {
             const tabId = sender.tab ? sender.tab.id : request.tabId; // Get tabId from sender or request
             if (tabId) {
-                await processNewContentWithAIBackground(request.text, tabId, sendResponse);
+                await processNewContentWithAIBackground(request.text, tabId, sendResponse, request.tweets || []);
             } else {
                 console.warn("[Forcefield BG] newContentDetected received without a tabId.");
             }
@@ -1580,7 +1580,7 @@ async function handleStopScan(tabId) {
 }
 
 // This is the new implementation of processNewContentWithAIBackground
-async function processNewContentWithAIBackground(text, tabId, originalSendResponse) {
+async function processNewContentWithAIBackground(text, tabId, originalSendResponse, tweets = []) {
     const onMessageLogPrefix = `[Forcefield BG OnMessage - Cmd: newContentDetected]`;
     let responseSent = false;
 
@@ -1609,11 +1609,13 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
 
         // Without a key for the selected model the scan cannot run. Say so, so
         // the page keeps these tweets and retries them once a key is saved.
-        const { selectedAiModel, anthropicApiKey, geminiApiKey } =
-            await chrome.storage.sync.get(['selectedAiModel', 'anthropicApiKey', 'geminiApiKey']);
+        const { selectedAiModel, anthropicApiKey, geminiApiKey, xEngine, typesafeApiKey } =
+            await chrome.storage.sync.get(['selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey']);
+        const usesJev = xEngine === 'jev' && tweets.length > 0;
         const provider = providerForModel(selectedAiModel || DEFAULT_AI_MODEL);
-        if (!(provider === 'google' ? geminiApiKey : anthropicApiKey)) {
-            const reason = `No ${provider === 'google' ? 'Gemini' : 'Anthropic'} API key saved`;
+        const hasKey = usesJev ? !!typesafeApiKey : !!(provider === 'google' ? geminiApiKey : anthropicApiKey);
+        if (!hasKey) {
+            const reason = `No ${usesJev ? 'TypeSafe' : provider === 'google' ? 'Gemini' : 'Anthropic'} API key saved`;
             console.log(`${onMessageLogPrefix} Content from tab ${tabId} will be ignored. Reason: ${reason}.`);
             logToPageConsole(tabId, `[Forcefield AI] Not scanning: ${reason}. Add it under Developer > API Keys.`);
             safeSendResponse({status: "Content ignored by background", accepted: false, reason: reason});
@@ -1627,6 +1629,7 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
             // as soon as the current one finishes.
             const combined = (pendingScanText[tabId] ? pendingScanText[tabId] + '\n\n' : '') + text;
             pendingScanText[tabId] = combined.slice(-12000); // keep the newest content, cap growth
+            pendingScanTweets[tabId] = (pendingScanTweets[tabId] || []).concat(tweets).slice(-200);
             console.log(`${onMessageLogPrefix} Scan in progress for tab ${tabId}; buffered ${text.length} chars for follow-up.`);
             safeSendResponse({status: "Scan in progress, content buffered"});
             return;
@@ -1636,13 +1639,15 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
         console.log(`${onMessageLogPrefix} Processing content for tab ${tabId}.`);
         safeSendResponse({status: "Content received and is being processed"}); // Acknowledge receipt
         try {
-            await handleNewContent(text, tabId);
+            await handleNewContent(text, tabId, tweets);
             // Drain anything that arrived while we were scanning.
             while (pendingScanText[tabId]) {
                 const followUp = pendingScanText[tabId];
+                const followUpTweets = pendingScanTweets[tabId] || [];
                 delete pendingScanText[tabId];
+                delete pendingScanTweets[tabId];
                 console.log(`${onMessageLogPrefix} Processing ${followUp.length} buffered chars for tab ${tabId}.`);
-                await handleNewContent(followUp, tabId);
+                await handleNewContent(followUp, tabId, followUpTweets);
             }
         } finally {
             // Cleared here — NOT in an outer finally, which used to release the
@@ -1660,16 +1665,50 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
 // batch re-sends fresh content.
 const ongoingScans = {};
 const pendingScanText = {};
+const pendingScanTweets = {};
 
 
-async function handleNewContent(text, tabId) {
+// Per-tweet path for X when the user picked Jev as the X engine: score each
+// tweet, hide whole tweets at or above the threshold.
+async function scanTweetsWithJev(tweets, tabId, allConfig) {
+    const threshold = typeof allConfig.jevThreshold === 'number' ? allConfig.jevThreshold : JEV_DEFAULT_THRESHOLD;
+    logToPageConsole(tabId, `[Forcefield AI] Scoring ${tweets.length} tweet(s) via Jev (hide at >= ${threshold})…`);
+    const results = await classifyTweetsWithJev({
+        tweets: tweets,
+        systemPrompt: allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT,
+        tasteContext: await getTasteContext(),
+        typesafeApiKey: allConfig.typesafeApiKey,
+        threshold: threshold
+    });
+    const hidden = results.filter(r => r.hide);
+    logToPageConsole(tabId, `[Forcefield AI] Jev scored ${results.length} tweet(s); hiding ${hidden.length}.`,
+        results.map(r => `${r.score === null ? '  ?' : r.score.toFixed(2)} ${r.hide ? 'HIDE' : 'keep'}  ${(r.tweet.handle || '')} ${String(r.tweet.text).replace(/\s+/g, ' ').slice(0, 90)}`));
+    if (hidden.length > 0) {
+        // The whole tweet text is the block phrase: the blocker finds the
+        // tweet's text element and boxes the post around it.
+        await addSuggestionsToBlocklist(hidden.map(r => String(r.tweet.text).slice(0, 300)), tabId, allConfig.whiteboxMode, allConfig.debugMode, 'jev');
+    }
+}
+
+async function handleNewContent(text, tabId, tweets) {
     const logPrefix = `[Forcefield BG HandleContent - Tab: ${tabId}]`;
     console.log(`${logPrefix} Received new content. Length: ${text.length}`);
-    
+
     try {
-        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey']);
+        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey', 'jevThreshold']);
         const localData = await chrome.storage.local.get(['whiteboxMode', 'debugMode']);
         const allConfig = { ...syncData, ...localData };
+
+        // X with Jev selected: per-tweet scoring instead of the text model.
+        // (tweets is only non-empty on X; other sites always use the LLM.)
+        if (allConfig.xEngine === 'jev' && Array.isArray(tweets) && tweets.length > 0) {
+            await scanTweetsWithJev(tweets, tabId, allConfig);
+            const { blockList } = await chrome.storage.local.get(['blockList']);
+            if (blockList && blockList.length > 0) {
+                triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode !== false);
+            }
+            return;
+        }
 
         const systemPrompt = allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
         const userPromptPrefix = allConfig.customUserPromptPrefix !== undefined ? allConfig.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
@@ -1731,7 +1770,7 @@ async function handleNewContent(text, tabId) {
 }
 
 
-async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debugMode) {
+async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debugMode, source = 'ai_continuous') {
     const tab = await chrome.tabs.get(tabId);
     const defaultLevel = getDefaultLevelForSite(tab.url);
 
@@ -1742,7 +1781,7 @@ async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debug
     suggestions.forEach(word => {
         const trimmedWord = word.trim();
         if (trimmedWord && !currentBlockList.some(item => item.text.toLowerCase() === trimmedWord.toLowerCase())) {
-            currentBlockList.push({ text: trimmedWord, level: defaultLevel, source: 'ai_continuous' });
+            currentBlockList.push({ text: trimmedWord, level: defaultLevel, source: source });
             newSuggestions.push(trimmedWord);
         }
     });

@@ -49,6 +49,42 @@ const anthropicApiKeyInput = document.getElementById('anthropicApiKey');
 const saveAnthropicApiKeyButton = document.getElementById('saveAnthropicApiKey');
 const geminiApiKeyInput = document.getElementById('geminiApiKey');
 const saveGeminiApiKeyButton = document.getElementById('saveGeminiApiKey');
+const typesafeApiKeyInput = document.getElementById('typesafeApiKey');
+const saveTypesafeApiKeyButton = document.getElementById('saveTypesafeApiKey');
+const xEngineSelect = document.getElementById('xEngineSelect');
+const jevThresholdInput = document.getElementById('jevThreshold');
+const JEV_THRESHOLD_DEFAULT = 0.5; // mirrors JEV_DEFAULT_THRESHOLD in jev.js
+
+// --- Engine on X (LLM or Jev) ---
+function loadXEngineSettings() {
+    chrome.storage.sync.get(['xEngine', 'jevThreshold'], (r) => {
+        if (xEngineSelect) xEngineSelect.value = r.xEngine === 'jev' ? 'jev' : 'llm';
+        if (jevThresholdInput) jevThresholdInput.value = typeof r.jevThreshold === 'number' ? r.jevThreshold : JEV_THRESHOLD_DEFAULT;
+        updateJevSettingsVisibility();
+    });
+}
+function updateJevSettingsVisibility() {
+    const box = document.getElementById('jevSettings');
+    if (box && xEngineSelect) box.style.display = xEngineSelect.value === 'jev' ? '' : 'none';
+}
+if (xEngineSelect) {
+    xEngineSelect.addEventListener('change', () => {
+        chrome.storage.sync.set({ xEngine: xEngineSelect.value });
+        updateJevSettingsVisibility();
+    });
+}
+if (jevThresholdInput) {
+    jevThresholdInput.addEventListener('change', () => {
+        let v = parseFloat(jevThresholdInput.value);
+        if (!isFinite(v)) v = JEV_THRESHOLD_DEFAULT;
+        v = Math.min(0.95, Math.max(0.05, v));
+        jevThresholdInput.value = v;
+        chrome.storage.sync.set({ jevThreshold: v });
+    });
+}
+if (saveTypesafeApiKeyButton) {
+    saveTypesafeApiKeyButton.addEventListener('click', () => saveApiKey('typesafeApiKey', typesafeApiKeyInput.value));
+}
 
 // Load and display the blocklist and system prompt when the popup opens
 document.addEventListener('DOMContentLoaded', () => {
@@ -58,6 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserPromptPrefix();
     loadAiModelSelection();
     loadApiKeys(); // Load API keys
+    loadXEngineSettings();
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
@@ -974,12 +1011,15 @@ function updateLevel(index, newLevel) {
 
 // --- New API Key Management Functions ---
 function loadApiKeys() {
-    chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey'], (result) => {
+    chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'typesafeApiKey'], (result) => {
         if (result.anthropicApiKey && anthropicApiKeyInput) {
             anthropicApiKeyInput.value = result.anthropicApiKey;
         }
         if (result.geminiApiKey && geminiApiKeyInput) {
             geminiApiKeyInput.value = result.geminiApiKey;
+        }
+        if (result.typesafeApiKey && typesafeApiKeyInput) {
+            typesafeApiKeyInput.value = result.typesafeApiKey;
         }
         console.log('[Forcefield Popup] API Keys loaded.');
     });

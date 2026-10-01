@@ -26,7 +26,8 @@ const MODEL_PRICING = {
     'claude-sonnet-4-6':      { input: 3.00,  output: 15.00 },
     'claude-opus-4-8':        { input: 5.00,  output: 25.00 },
     'gemini-2.5-flash-lite':  { input: 0.10,  output: 0.40 },
-    'gemini-3.1-flash-lite':  { input: 0.25,  output: 1.50 }
+    'gemini-3.1-flash-lite':  { input: 0.25,  output: 1.50 },
+    'jev-latest':             { input: 0.042, output: 0 }   // TypeSafe Jev: output unmetered (see jev.js)
 };
 const DEFAULT_SPEND_LIMITS = { hourly: 1.00, daily: 2.00 }; // USD
 

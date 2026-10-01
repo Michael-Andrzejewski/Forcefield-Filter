@@ -6,6 +6,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     let debounceTimer = null;
     let newTextBuffer = []; // Collects text from mutations
     let newKeyBuffer = []; // Tweet keys for the tweets in newTextBuffer (X only)
+    let newTweetBuffer = []; // [{text, handle}] per tweet, for per-tweet engines like Jev (X only)
     let isObserving = false; // This will be controlled by messages
     const DEBOUNCE_DELAY = 1000; // 1 second — batches mutations so a fast scroll is one AI call, not ten
     const MIN_NODE_TEXT_LENGTH = 5; // Minimum length for a single node's text to be considered
@@ -37,8 +38,8 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     }
 
     // Sends a batch to the background. `keys` are the tweet keys inside it.
-    function sendNewContent(text, keys, logLabel) {
-        chrome.runtime.sendMessage({ command: "newContentDetected", text: text }, (response) => {
+    function sendNewContent(text, keys, logLabel, tweets) {
+        chrome.runtime.sendMessage({ command: "newContentDetected", text: text, tweets: tweets || [] }, (response) => {
             if (chrome.runtime.lastError) {
                 console.warn(`[Forcefield CS] Error sending newContentDetected (${logLabel}):`, chrome.runtime.lastError.message);
                 forgetTweetKeys(keys);
@@ -50,11 +51,13 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     }
 
     // Collect tweet texts under `root` that we have NOT sent to the AI yet.
-    // Returns { texts, keys, sawTweets } — sawTweets is true if ANY tweet
+    // Returns { texts, keys, tweets, sawTweets } — tweets is [{text, handle}];
+    // sawTweets is true if ANY tweet
     // rendered (even an already-sent one), so the caller still re-runs the blocker.
     function collectNewTweetTexts(root) {
         const texts = [];
         const keys = [];
+        const tweets = [];
         let sawTweets = false;
         const els = [];
         if (root.matches && root.matches('[data-testid="tweetText"]')) els.push(root);
@@ -68,9 +71,18 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                 rememberTweetKey(key);
                 texts.push(t);
                 keys.push(key);
+                tweets.push({ text: t, handle: handleOf(el) });
             }
         }
-        return { texts: texts, keys: keys, sawTweets: sawTweets };
+        return { texts: texts, keys: keys, tweets: tweets, sawTweets: sawTweets };
+    }
+
+    // "@handle" of the post a tweetText element belongs to, or ''.
+    function handleOf(el) {
+        const article = el.closest && el.closest('article');
+        const nameEl = article && article.querySelector('[data-testid="User-Name"]');
+        if (!nameEl) return '';
+        return (nameEl.innerText || '').split(/\n/).map(s => s.trim()).find(l => l.startsWith('@')) || '';
     }
 
     // After the extension is reloaded or updated, the copy of this script
@@ -94,6 +106,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         clearTimeout(debounceTimer);
         newTextBuffer = [];
         newKeyBuffer = [];
+        newTweetBuffer = [];
         if (onVisibilityChange) document.removeEventListener('visibilitychange', onVisibilityChange);
         // Let a re-injected copy of this script initialize from scratch.
         window.forcefieldObserverInitialized = undefined;
@@ -135,12 +148,14 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         console.log('[Forcefield CS] Performing initial page scan...');
         const initialScanBuffer = [];
         let initialKeys = [];
+        let initialTweets = [];
 
         if (IS_TWITTER) {
             // Tweet-only mode: collect just the tweet bodies on screen.
             const found = collectNewTweetTexts(document.body);
             initialScanBuffer.push(...found.texts);
             initialKeys = found.keys;
+            initialTweets = found.tweets;
         }
 
         function collectVisibleTextRecursive(node, buffer) {
@@ -190,7 +205,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
             if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
                 console.log('[Forcefield Continuous Scan] Initial page scan text meeting criteria:', combinedText.substring(0, 200) + '...');
                 if (canSendMessage()) {
-                    sendNewContent(combinedText, initialKeys, 'initial scan');
+                    sendNewContent(combinedText, initialKeys, 'initial scan', initialTweets);
                 } else {
                     console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected (initial scan).');
                     forgetTweetKeys(initialKeys);
@@ -221,6 +236,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                     if (found.sawTweets) significantChangeDetected = true;
                     if (found.texts.length > 0) newTextBuffer.push(...found.texts);
                     if (found.keys.length > 0) newKeyBuffer.push(...found.keys);
+                    if (found.tweets.length > 0) newTweetBuffer.push(...found.tweets);
                 }
             }
             scheduleDebouncedFlush(significantChangeDetected);
@@ -322,13 +338,15 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                 if (newTextBuffer.length > 0) {
                     const combinedText = newTextBuffer.join('\n\n').trim();
                     const keys = newKeyBuffer;
+                    const tweets = newTweetBuffer;
                     newTextBuffer = [];
                     newKeyBuffer = [];
+                    newTweetBuffer = [];
 
                     if (combinedText.length >= MIN_COMBINED_TEXT_LENGTH && hasSufficientAlphaCharacters(combinedText, MIN_ALPHA_RATIO)) {
                         console.log('[Forcefield Continuous Scan] Debounced new text meeting criteria:', combinedText.substring(0,200) + '...');
                         if (canSendMessage()) {
-                            sendNewContent(combinedText, keys, 'debounced');
+                            sendNewContent(combinedText, keys, 'debounced', tweets);
                         } else {
                             console.warn('[Forcefield CS] Context invalidated, cannot send newContentDetected. Payload that would have been sent:', { command: "newContentDetected", text: combinedText.substring(0,100) + '...'});
                         }
@@ -341,6 +359,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                 } else {
                     newTextBuffer = [];
                     newKeyBuffer = [];
+                    newTweetBuffer = [];
                 }
             }, DEBOUNCE_DELAY);
         }
@@ -356,6 +375,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         forgetTweetKeys(newKeyBuffer);
         newTextBuffer = [];
         newKeyBuffer = [];
+        newTweetBuffer = [];
         clearTimeout(debounceTimer);
 
         if (!document.body) {
@@ -389,6 +409,7 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         forgetTweetKeys(newKeyBuffer);
         newTextBuffer = [];
         newKeyBuffer = [];
+        newTweetBuffer = [];
         console.log('[Forcefield CS] Observer stopped.');
     }
 
