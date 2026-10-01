@@ -19,6 +19,14 @@ if (start < 0 || fnStart < 0 || end < 0) { console.log('Could not find taste cod
 const code = src.slice(start, end) +
     '\n;globalThis.__api = { getTasteContext, updateTasteSummary, TASTE_SUMMARY_PLACEHOLDER, formatActivityExamples };';
 
+// Real model helpers from llm.js (textModelFor), loaded in their own sandbox.
+const REAL_LLM = (() => {
+    const box = { self: {}, console: { log() {}, warn() {} } };
+    vm.createContext(box);
+    vm.runInContext(fs.readFileSync(path.join(path.dirname(bgPath), 'llm.js'), 'utf8'), box);
+    return box.self.ForcefieldLLM;
+})();
+
 let pass = 0, fail = 0;
 function check(cond, name, detail) {
     if (cond) pass++;
@@ -34,6 +42,7 @@ function makeSandbox(local, sync) {
             sync: { get: async keys => pick(sync, keys) }
         } },
         DEFAULT_AI_MODEL: 'claude-haiku-4-5',
+        textModelFor: REAL_LLM.textModelFor,
         providerForModel: m => (m.startsWith('gemini') ? 'google' : 'anthropic'),
         callLLM: async args => { calls.push(args); return FAKE_PROFILE; }
     };

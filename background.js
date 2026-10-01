@@ -109,7 +109,7 @@ async function refineSystemPromptWithAI(incorrectlyBlockedText, tabId) {
     });
 
     const systemPrompt = storedData.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
-    const model = storedData.selectedAiModel || DEFAULT_AI_MODEL;
+    const model = textModelFor(storedData.selectedAiModel);
     const apiKey = storedData.anthropicApiKey;
     const geminiApiKey = storedData.geminiApiKey;
     const provider = providerForModel(model);
@@ -834,7 +834,7 @@ async function refinePromptsWithAI(selectedText, tabId) {
 
         const anthropicApiKey = storedApiKeys.anthropicApiKey;
         const geminiApiKey = storedApiKeys.geminiApiKey;
-        const model = storedModel.selectedAiModel || DEFAULT_AI_MODEL;
+        const model = textModelFor(storedModel.selectedAiModel);
         const provider = providerForModel(model);
         const keyForProvider = provider === 'google' ? geminiApiKey : anthropicApiKey;
         if (!keyForProvider) {
@@ -1265,7 +1265,7 @@ async function updateTasteSummary({ force } = { force: false }) {
 
     const { anthropicApiKey, geminiApiKey, selectedAiModel } =
         await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey', 'selectedAiModel']);
-    const model = selectedAiModel || DEFAULT_AI_MODEL;
+    const model = textModelFor(selectedAiModel);
     const keyForProvider = providerForModel(model) === 'google' ? geminiApiKey : anthropicApiKey;
     if (!keyForProvider) {
         const label = providerForModel(model) === 'google' ? 'Gemini' : 'Anthropic';
@@ -1389,7 +1389,7 @@ Posts to judge:
 ${tweets.map((t, i) => `${i}. ${t.handle}: ${t.text}`).join('\n')}`;
 
     const raw = await callLLM({
-        model: selectedAiModel || DEFAULT_AI_MODEL,
+        model: textModelFor(selectedAiModel),
         system: system,
         userText: userText,
         maxTokens: 2048,
@@ -1611,8 +1611,8 @@ async function processNewContentWithAIBackground(text, tabId, originalSendRespon
         // the page keeps these tweets and retries them once a key is saved.
         const { selectedAiModel, anthropicApiKey, geminiApiKey, xEngine, typesafeApiKey } =
             await chrome.storage.sync.get(['selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey']);
-        const usesJev = xEngine === 'jev' && tweets.length > 0;
-        const provider = providerForModel(selectedAiModel || DEFAULT_AI_MODEL);
+        const usesJev = usesJevOnX({ selectedAiModel, xEngine }) && tweets.length > 0;
+        const provider = providerForModel(textModelFor(selectedAiModel));
         const hasKey = usesJev ? !!typesafeApiKey : !!(provider === 'google' ? geminiApiKey : anthropicApiKey);
         if (!hasKey) {
             const reason = `No ${usesJev ? 'TypeSafe' : provider === 'google' ? 'Gemini' : 'Anthropic'} API key saved`;
@@ -1701,7 +1701,7 @@ async function handleNewContent(text, tabId, tweets) {
 
         // X with Jev selected: per-tweet scoring instead of the text model.
         // (tweets is only non-empty on X; other sites always use the LLM.)
-        if (allConfig.xEngine === 'jev' && Array.isArray(tweets) && tweets.length > 0) {
+        if (usesJevOnX(allConfig) && Array.isArray(tweets) && tweets.length > 0) {
             await scanTweetsWithJev(tweets, tabId, allConfig);
             const { blockList } = await chrome.storage.local.get(['blockList']);
             if (blockList && blockList.length > 0) {
@@ -1712,7 +1712,7 @@ async function handleNewContent(text, tabId, tweets) {
 
         const systemPrompt = allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT;
         const userPromptPrefix = allConfig.customUserPromptPrefix !== undefined ? allConfig.customUserPromptPrefix : DEFAULT_USER_PROMPT_PREFIX;
-        const aiModel = allConfig.selectedAiModel || DEFAULT_AI_MODEL;
+        const aiModel = textModelFor(allConfig.selectedAiModel);
         const provider = providerForModel(aiModel);
         const keyForProvider = provider === 'google' ? allConfig.geminiApiKey : allConfig.anthropicApiKey;
 

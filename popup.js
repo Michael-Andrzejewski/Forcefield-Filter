@@ -51,37 +51,30 @@ const geminiApiKeyInput = document.getElementById('geminiApiKey');
 const saveGeminiApiKeyButton = document.getElementById('saveGeminiApiKey');
 const typesafeApiKeyInput = document.getElementById('typesafeApiKey');
 const saveTypesafeApiKeyButton = document.getElementById('saveTypesafeApiKey');
-const xEngineSelect = document.getElementById('xEngineSelect');
-const jevThresholdInput = document.getElementById('jevThreshold');
+const jevThresholdInputs = [...document.querySelectorAll('.jev-threshold')];
 const JEV_THRESHOLD_DEFAULT = 0.5; // mirrors JEV_DEFAULT_THRESHOLD in jev.js
 
-// --- Engine on X (LLM or Jev) ---
-function loadXEngineSettings() {
-    chrome.storage.sync.get(['xEngine', 'jevThreshold'], (r) => {
-        if (xEngineSelect) xEngineSelect.value = r.xEngine === 'jev' ? 'jev' : 'llm';
-        if (jevThresholdInput) jevThresholdInput.value = typeof r.jevThreshold === 'number' ? r.jevThreshold : JEV_THRESHOLD_DEFAULT;
-        updateJevSettingsVisibility();
+// --- Jev threshold (shown under the model dropdowns when Jev is selected) ---
+function loadJevThreshold() {
+    chrome.storage.sync.get(['jevThreshold'], (r) => {
+        const v = typeof r.jevThreshold === 'number' ? r.jevThreshold : JEV_THRESHOLD_DEFAULT;
+        jevThresholdInputs.forEach(i => { i.value = v; });
     });
 }
-function updateJevSettingsVisibility() {
-    const box = document.getElementById('jevSettings');
-    if (box && xEngineSelect) box.style.display = xEngineSelect.value === 'jev' ? '' : 'none';
-}
-if (xEngineSelect) {
-    xEngineSelect.addEventListener('change', () => {
-        chrome.storage.sync.set({ xEngine: xEngineSelect.value });
-        updateJevSettingsVisibility();
+function updateJevSettingsVisibility(selectedModel) {
+    document.querySelectorAll('.jev-settings').forEach(box => {
+        box.style.display = selectedModel === JEV_MODEL_ID ? '' : 'none';
     });
 }
-if (jevThresholdInput) {
-    jevThresholdInput.addEventListener('change', () => {
-        let v = parseFloat(jevThresholdInput.value);
+jevThresholdInputs.forEach(input => {
+    input.addEventListener('change', () => {
+        let v = parseFloat(input.value);
         if (!isFinite(v)) v = JEV_THRESHOLD_DEFAULT;
         v = Math.min(0.95, Math.max(0.05, v));
-        jevThresholdInput.value = v;
+        jevThresholdInputs.forEach(i => { i.value = v; });
         chrome.storage.sync.set({ jevThreshold: v });
     });
-}
+});
 if (saveTypesafeApiKeyButton) {
     saveTypesafeApiKeyButton.addEventListener('click', () => saveApiKey('typesafeApiKey', typesafeApiKeyInput.value));
 }
@@ -94,7 +87,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserPromptPrefix();
     loadAiModelSelection();
     loadApiKeys(); // Load API keys
-    loadXEngineSettings();
+    loadJevThreshold();
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
@@ -1307,19 +1300,26 @@ function loadAiModelSelection() {
     [aiModelSelect, devAiModelSelect].forEach(select => {
         if (select) {
             select.innerHTML = ''; // Clear existing options
-            for (const modelId in AVAILABLE_AI_MODELS) {
+            for (const modelId in SELECTABLE_AI_MODELS) {
                 const option = document.createElement('option');
                 option.value = modelId;
-                option.textContent = AVAILABLE_AI_MODELS[modelId];
+                option.textContent = SELECTABLE_AI_MODELS[modelId];
                 select.appendChild(option);
             }
         }
     });
 
     // Load saved selection or use default
-    chrome.storage.sync.get(['selectedAiModel'], (result) => {
+    chrome.storage.sync.get(['selectedAiModel', 'xEngine'], (result) => {
         let selectedModel = result.selectedAiModel || DEFAULT_AI_MODEL;
-        if (!AVAILABLE_AI_MODELS[selectedModel]) {
+        // 2.8.0 kept Jev in a separate "Engine on X" setting: fold it into
+        // the model selection and drop the old key.
+        if (result.xEngine !== undefined) {
+            if (result.xEngine === 'jev') selectedModel = JEV_MODEL_ID;
+            chrome.storage.sync.set({ selectedAiModel: selectedModel });
+            chrome.storage.sync.remove('xEngine');
+        }
+        if (!SELECTABLE_AI_MODELS[selectedModel]) {
             console.warn(`[Forcefield AI] Saved model ${selectedModel} is unavailable. Resetting to ${DEFAULT_AI_MODEL}.`);
             selectedModel = DEFAULT_AI_MODEL;
             chrome.storage.sync.set({ selectedAiModel: DEFAULT_AI_MODEL }); // clean stale value
@@ -1327,12 +1327,14 @@ function loadAiModelSelection() {
         [aiModelSelect, devAiModelSelect].forEach(select => {
             if (select) select.value = selectedModel;
         });
+        updateJevSettingsVisibility(selectedModel);
     });
 }
 
 function saveAiModelSelection(event) {
     const selectedModel = event.target.value;
-    if (AVAILABLE_AI_MODELS[selectedModel]) {
+    updateJevSettingsVisibility(selectedModel);
+    if (SELECTABLE_AI_MODELS[selectedModel]) {
         chrome.storage.sync.set({ selectedAiModel: selectedModel }, () => {
             console.log(`[Forcefield AI] AI Model selection saved: ${selectedModel}`);
             // Sync both dropdowns

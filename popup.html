@@ -455,16 +455,11 @@
           <select class="ai-model-select" id="aiModelSelect">
             <!-- Options will be populated by JavaScript -->
           </select>
-          <div class="section-title" style="margin-top: 10px;">Engine on X</div>
-          <select class="ai-model-select" id="xEngineSelect">
-            <option value="llm">AI model above (finds sentences)</option>
-            <option value="jev">Jev by TypeSafe (scores each tweet)</option>
-          </select>
-          <div id="jevSettings" style="margin-top: 6px;">
+          <div class="jev-settings" style="margin-top: 6px; display: none;">
             <label style="font-size: 11px; color: #2c3e50;">Hide tweets scoring at least
-              <input type="number" id="jevThreshold" min="0.05" max="0.95" step="0.05" style="width: 56px;">
+              <input type="number" class="jev-threshold" min="0.05" max="0.95" step="0.05" style="width: 56px;">
             </label>
-            <p style="font-size: 10px; color: #7f8c8d; margin: 4px 0 0 0;">0 to 1. Higher hides less. Needs a TypeSafe key under Developer &gt; API Keys. Other sites keep using the AI model above.</p>
+            <p style="font-size: 10px; color: #7f8c8d; margin: 4px 0 0 0;">0 to 1. Higher hides less. Needs a TypeSafe key under Developer &gt; API Keys. Other sites use Haiku.</p>
           </div>
         </div>
       </div>
@@ -562,6 +557,11 @@
             <select class="ai-model-select" id="devAiModelSelect">
               <!-- Options will be populated by JavaScript -->
             </select>
+            <div class="jev-settings" style="margin-top: 6px; display: none;">
+              <label style="font-size: 11px; color: #2c3e50;">Hide tweets scoring at least
+                <input type="number" class="jev-threshold" min="0.05" max="0.95" step="0.05" style="width: 56px;">
+              </label>
+            </div>
           </div>
         </div>
       </div>

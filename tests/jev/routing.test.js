@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const vm = require('vm');
 const src = fs.readFileSync(path.join(__dirname, '..', '..', 'background.js'), 'utf8');
+const llmSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'llm.js'), 'utf8');
 
 function extract(sig) {
     const start = src.indexOf(sig);
@@ -42,7 +43,13 @@ async function run(sync, tweets, jevScores) {
         addSuggestionsToBlocklist: async (s, tab, w, d, source) => log.added.push({ s, source: source || 'ai_continuous' }),
         triggerPageBlock: () => { log.triggered++; }
     };
+    // Real model helpers (textModelFor, usesJevOnX, JEV_MODEL_ID) from llm.js;
+    // the stubs above are restored on top for anything touching the network.
+    const stubs = Object.assign({}, box);
+    box.self = {};
     vm.createContext(box);
+    vm.runInContext(llmSrc, box);
+    Object.assign(box, stubs);
     vm.runInContext(code + '\n;globalThis.__h = handleNewContent;', box);
     await box.__h('combined text of the batch', 3, tweets);
     return log;
@@ -75,6 +82,18 @@ const T = [{ text: 'first tweet', handle: '@a' }, { text: 'second tweet', handle
     {
         const l = await run({ xEngine: 'jev', anthropicApiKey: 'a', typesafeApiKey: 'k' }, [], []);
         check(l.jev.length === 0 && l.llm === 1, 'other sites (no per-tweet items) -> text model even with Jev selected');
+    }
+    {
+        const l = await run({ selectedAiModel: 'jev-latest', typesafeApiKey: 'k', anthropicApiKey: 'a' }, T, [0.9, 0.1, 0.1]);
+        check(l.jev.length === 1 && l.llm === 0, 'Jev picked in the AI Model dropdown -> Jev on X');
+    }
+    {
+        const l = await run({ selectedAiModel: 'jev-latest', typesafeApiKey: 'k', anthropicApiKey: 'a' }, [], []);
+        check(l.jev.length === 0 && l.llm === 1, 'Jev picked, other site -> text model');
+    }
+    {
+        const l = await run({ selectedAiModel: 'claude-sonnet-4-6', typesafeApiKey: 'k', anthropicApiKey: 'a' }, T, []);
+        check(l.jev.length === 0 && l.llm === 1, 'Sonnet picked -> text model on X');
     }
     {
         const l = await run({ anthropicApiKey: 'a' }, T, []);

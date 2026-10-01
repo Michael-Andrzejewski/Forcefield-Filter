@@ -18,6 +18,25 @@ const AVAILABLE_AI_MODELS = {
 };
 const DEFAULT_AI_MODEL = 'claude-haiku-4-5';
 
+// Jev (TypeSafe, see jev.js) is selectable in the same dropdown, but it only
+// scores tweets: it never writes text. With Jev selected, X uses Jev and
+// everything that needs a text model (other sites, taste profile updates,
+// AI Suggestions, the autonomous agent) uses DEFAULT_AI_MODEL.
+const JEV_MODEL_ID = 'jev-latest';
+const SELECTABLE_AI_MODELS = Object.assign({}, AVAILABLE_AI_MODELS, {
+    [JEV_MODEL_ID]: 'Jev by TypeSafe (X only)'
+});
+// The text model to use for a saved selection.
+function textModelFor(model) {
+    return (model && AVAILABLE_AI_MODELS[model]) ? model : DEFAULT_AI_MODEL;
+}
+// True when X should be scanned with Jev. xEngine is the 2.8.0 setting,
+// still honoured until the popup migrates it.
+function usesJevOnX(syncSettings) {
+    const s = syncSettings || {};
+    return s.selectedAiModel === JEV_MODEL_ID || s.xEngine === 'jev';
+}
+
 // --- Cost guard ---------------------------------------------------------
 // USD per million tokens (July 2026). Cache reads bill ~0.1x input, cache
 // writes 1.25x — recordSpend applies those multipliers from response usage.
@@ -82,7 +101,9 @@ function providerForModel(model) {
 async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false }) {
     // Guard against a stale/retired model id lingering in storage (e.g. an old
     // claude-3-* selection from before the model list was modernized).
-    if (!AVAILABLE_AI_MODELS[model]) {
+    if (model === JEV_MODEL_ID) {
+        model = DEFAULT_AI_MODEL; // Jev selected: text jobs use the default text model
+    } else if (!AVAILABLE_AI_MODELS[model]) {
         console.warn(`[Forcefield] Unknown/stale model "${model}" — falling back to ${DEFAULT_AI_MODEL}.`);
         model = DEFAULT_AI_MODEL;
     }
@@ -218,6 +239,7 @@ function extractNegativeTags(text) {
 // other classic scripts in the same realm; this just makes the surface explicit).
 self.ForcefieldLLM = {
     AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
+    JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX,
     extractNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING
 };
 
