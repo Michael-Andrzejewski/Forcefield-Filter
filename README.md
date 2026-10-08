@@ -33,7 +33,7 @@ Forcefield is not on the Chrome Web Store yet. Load it unpacked:
 
 1. Get an API key. The default model is Claude Haiku, so you'll want an [Anthropic API key](https://platform.claude.com/). Gemini Flash-Lite is also supported with a Google AI key.
 2. Click the Forcefield icon, flip on the **Developer** toggle in the header, open **API Keys**, and paste your key.
-3. Pick a model under **AI Model** (Haiku 4.5 is the cheapest Claude option and the default).
+3. Pick a model under **AI Model** (Haiku 5.5 is the cheapest Claude option and the default).
 4. Go to a site on your allowed list (X/Twitter and Quora by default; add others under **Sites to Scan**) and press **Start Scanning**.
 
 Optional tuning, all in Developer mode:

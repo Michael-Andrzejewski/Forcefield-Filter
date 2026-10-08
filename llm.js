@@ -10,13 +10,14 @@
 // id -> human label. Kept as a plain string map for backward compatibility with
 // the dropdown population code, which assigns the value to option.textContent.
 const AVAILABLE_AI_MODELS = {
-    'claude-haiku-4-5':       'Claude Haiku 4.5 (cheapest, default)',
+    'claude-haiku-5-5':       'Claude Haiku 5.5 (cheapest, default)',
+    'claude-haiku-4-5':       'Claude Haiku 4.5 (previous Haiku)',
     'claude-sonnet-4-6':      'Claude Sonnet 4.6 (balanced)',
     'claude-opus-4-8':        'Claude Opus 4.8 (most capable)',
     'gemini-2.5-flash-lite':  'Gemini 2.5 Flash-Lite (cheapest overall)',
     'gemini-3.1-flash-lite':  'Gemini 3.1 Flash-Lite (smarter)'
 };
-const DEFAULT_AI_MODEL = 'claude-haiku-4-5';
+const DEFAULT_AI_MODEL = 'claude-haiku-5-5';
 
 // Jev (TypeSafe, see jev.js) is selectable in the same dropdown, but it only
 // scores tweets: it never writes text. With Jev selected, X uses Jev and
@@ -38,9 +39,11 @@ function usesJevOnX(syncSettings) {
 }
 
 // --- Cost guard ---------------------------------------------------------
-// USD per million tokens (July 2026). Cache reads bill ~0.1x input, cache
+// USD per million tokens (July 2026; Haiku 5.5 added October 2026). Haiku 5.5
+// is $0.10/$0.50 for prompts up to 100K tokens; scans are far below that. Cache reads bill ~0.1x input, cache
 // writes 1.25x — recordSpend applies those multipliers from response usage.
 const MODEL_PRICING = {
+    'claude-haiku-5-5':       { input: 0.10,  output: 0.50 },
     'claude-haiku-4-5':       { input: 1.00,  output: 5.00 },
     'claude-sonnet-4-6':      { input: 3.00,  output: 15.00 },
     'claude-opus-4-8':        { input: 5.00,  output: 25.00 },
@@ -163,6 +166,11 @@ async function callAnthropic({ model, system, userText, maxTokens, anthropicApiK
         // Note: temperature is intentionally omitted. Opus 4.8 (and Fable 5)
         // reject sampling params; tag extraction doesn't need them anyway.
     };
+    if (model === 'claude-haiku-5-5') {
+        // Haiku 5.5 thinks by default. Tag extraction doesn't need it, so turn
+        // it off like Gemini's thinkingBudget: 0 (cheaper, faster scans).
+        body.thinking = { type: 'disabled' };
+    }
     if (system) {
         // cache_control caches the stable system prefix so repeated scans in a
         // browsing session re-read it at ~10% cost. Only actually caches once the
