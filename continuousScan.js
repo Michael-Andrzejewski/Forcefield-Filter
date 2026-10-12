@@ -415,7 +415,9 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
                 } else if (request.command === "queryObserverState") {
                     sendResponse({ isObserving: isObserving, initialized: true });
                 }
-                return true; 
+                // Every reply above is synchronous. Returning true here would
+                // hold the channel open for messages this script ignores.
+                return false;
             });
             window.forcefieldMessageListenerAdded = true;
         } else {
@@ -429,13 +431,32 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
     // to the front. Replaces a four-message handshake that only started
     // scanning on a tab the background had ALREADY picked, so a refresh or a
     // new X tab stayed idle until the popup was opened.
-    function claimScanAndStart(label) {
+    //
+    // The background is a service worker that Chrome stops when idle and
+    // restarts on demand. A claim that lands while it is shutting down or
+    // restarting fails with "message channel closed". Giving up on that one
+    // failure left the tab idle until the popup was opened, so retry a few
+    // times with growing gaps. A newer claim (tab switch) cancels older retries.
+    const CLAIM_RETRY_DELAYS = [500, 1500, 4000, 10000];
+    let claimGeneration = 0;
+    function claimScanAndStart(label, attempt = 0, generation = ++claimGeneration) {
         if (!canSendMessage()) return; // orphaned: canSendMessage already shut us down
+        if (generation !== claimGeneration) return; // superseded by a newer claim
+        if (document.visibilityState !== 'visible') return; // hidden tabs don't claim
         chrome.runtime.sendMessage({ command: "claimScan" }, (response) => {
-            if (chrome.runtime.lastError) {
-                console.warn(`[Forcefield CS] ${label}: could not reach the background:`, chrome.runtime.lastError.message);
+            const failure = chrome.runtime.lastError ? chrome.runtime.lastError.message
+                : (response && response.error) ? `background error: ${response.error}` : null;
+            if (failure) {
+                const delay = CLAIM_RETRY_DELAYS[attempt];
+                if (delay === undefined) {
+                    console.warn(`[Forcefield CS] ${label}: could not reach the background after ${attempt + 1} tries:`, failure);
+                    return;
+                }
+                console.log(`[Forcefield CS] ${label}: background did not answer (${failure}). Retrying in ${delay} ms.`);
+                setTimeout(() => claimScanAndStart(label, attempt + 1, generation), delay);
                 return;
             }
+            if (generation !== claimGeneration) return;
             if (response && response.start) {
                 if (!isObserving) {
                     console.log(`[Forcefield CS] ${label}: scanning this tab.`);

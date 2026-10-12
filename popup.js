@@ -471,7 +471,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         }
         sendResponse({status: "Popup blocklist display updated"});
     }
-    return true; 
+    // Replies above are synchronous. Returning true would hold open every
+    // message the popup ignores (page scripts' claimScan and scans too).
+    return false;
 });
 
 // --- New functions for Allowed Sites ---

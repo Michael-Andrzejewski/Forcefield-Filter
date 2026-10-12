@@ -1,0 +1,77 @@
+<!doctype html><html><head><meta charset="utf-8"><title>claim-retry</title></head><body>
+<div id="feed"></div>
+<pre id="results"></pre>
+<script>
+// Fake chrome.runtime whose claimScan replies fail like a service worker that
+// was stopping or restarting: lastError "message channel closed", no answer.
+window.__sent = [];
+window.__errors = [];
+window.__claimFailures = 2; // the first N claims fail
+window.__claimMode = 'channel'; // 'channel' = lastError, 'error' = {error} reply
+window.addEventListener('error', e => __errors.push(String(e.message)));
+const answers = { newContentDetected: { accepted: true }, runBlocker: {}, claimScan: { start: true } };
+const listeners = [];
+window.chrome = {
+  runtime: {
+    id: 'fakeextensionid',
+    lastError: undefined,
+    sendMessage(msg, cb) {
+      __sent.push(msg.command);
+      setTimeout(() => {
+        if (msg.command === 'claimScan' && __claimFailures > 0) {
+          __claimFailures--;
+          if (__claimMode === 'error') { cb && cb({ error: 'boom', start: false }); return; }
+          chrome.runtime.lastError = { message: 'A listener indicated an asynchronous response by returning true, but the message channel closed before a response was received' };
+          try { cb && cb(undefined); } finally { chrome.runtime.lastError = undefined; }
+          return;
+        }
+        cb && cb(answers[msg.command]);
+      }, 5);
+    },
+    onMessage: { addListener(fn) { listeners.push(fn); } }
+  },
+  storage: { local: { get(keys, cb) { setTimeout(() => cb({}), 1); }, set(obj, cb) { cb && setTimeout(cb, 1); } } }
+};
+</script>
+<script>/*CONTINUOUS_SCAN*/</script>
+<script>
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const results = { pass: 0, fail: 0, failures: [] };
+function check(c, name, d) { if (c) results.pass++; else { results.fail++; results.failures.push(name + (d ? ' :: ' + d : '')); } }
+const claims = () => __sent.filter(c => c === 'claimScan').length;
+const observing = () => new Promise(r => listeners[0]({ command: 'queryObserverState' }, {}, resp => r(resp.isObserving)));
+
+(async () => {
+  // Two dropped claims (500 ms then 1500 ms retry), third succeeds.
+  await sleep(300);
+  check(claims() === 1 && !(await observing()), 'first claim fails, not scanning yet', claims());
+  await sleep(2500);
+  check(claims() === 3, 'page retried the claim after channel-closed failures', claims());
+  check(await observing(), 'page is scanning after a retry succeeds');
+
+  // A {error} reply from the background is retried too.
+  listeners[0]({ command: 'stopObserving' }, {}, () => {});
+  __claimMode = 'error'; __claimFailures = 1;
+  const before = claims();
+  document.dispatchEvent(new Event('visibilitychange'));
+  await sleep(1200);
+  check(claims() - before === 2 && await observing(), 'background error reply is retried', claims() - before);
+
+  // A background that never answers: retries stop after the last delay.
+  listeners[0]({ command: 'stopObserving' }, {}, () => {});
+  __claimMode = 'channel'; __claimFailures = 99;
+  const b2 = claims();
+  document.dispatchEvent(new Event('visibilitychange'));
+  await sleep(18000);
+  check(claims() - b2 === 5, 'gives up after 5 tries in total', claims() - b2);
+  await sleep(5000);
+  check(claims() - b2 === 5, 'no further tries after giving up', claims() - b2);
+
+  // Unknown messages are not held open.
+  check(listeners[0]({ command: 'somethingElse' }, {}, () => {}) === false, 'listener does not hold unknown messages open');
+  check(__errors.length === 0, 'no uncaught errors', __errors.join(' | '));
+
+  document.getElementById('results').textContent = JSON.stringify(results);
+  document.title = 'DONE';
+})();
+</script></body></html>

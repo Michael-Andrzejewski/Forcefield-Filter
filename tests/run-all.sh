@@ -9,6 +9,7 @@ node "$D/jev/test.js" || status=1
 node "$D/jev/routing.test.js" || status=1
 "$D/popup/run.sh" || status=1
 "$D/orphan/run.sh" || status=1
+"$D/claim-retry/run.sh" || status=1
 "$D/revealed-bar/run.sh" || status=1
 [ $status = 0 ] && echo "ALL PASSED" || echo "SOME FAILED"
 exit $status

@@ -107,6 +107,22 @@ chrome.storage.local.get(['activeScanTabId'], (result) => {
     }
 });
 
+// After an install, update or reload, tabs that were already open keep only
+// the old, now-dead copy of the page script (registered scripts load on new
+// page loads only). Inject a fresh copy so they resume scanning without a
+// refresh or a click on the icon. The new copy claims the scan itself if its
+// tab is in front.
+chrome.runtime.onInstalled.addListener(async () => {
+    await syncContinuousScanRegistration();
+    let tabs = [];
+    try { tabs = await chrome.tabs.query({}); } catch (e) { return; }
+    for (const tab of tabs) {
+        if (!tab.id || !tab.url || !(await isSiteAllowed(tab.url))) continue;
+        chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['continuousScan.js'] })
+            .catch(e => console.log(`[Forcefield BG] Could not re-inject page script into tab ${tab.id}:`, e.message));
+    }
+});
+
 // Utility function to log messages to a specific tab's console
 async function logToPageConsole(tabId, ...args) {
   if (!tabId) {
@@ -1060,6 +1076,7 @@ console.log("[Forcefield Background] Service worker started.");
 // Main message handler for various requests from other parts of the extension
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
+      try {
         if (request.command === "newContentDetected") {
             const tabId = sender.tab ? sender.tab.id : request.tabId; // Get tabId from sender or request
             if (tabId) {
@@ -1181,6 +1198,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 .catch(error => console.error('[Forcefield BG] Error handling refineSystemPrompt command:', error));
             return true; // Indicates async response
         }
+      } catch (e) {
+        // A handler threw before replying. Answer anyway: an unanswered
+        // message leaves the sender with "message channel closed" and, for
+        // claimScan, a page that never starts scanning.
+        console.error(`[Forcefield BG] Error handling ${request.command}:`, e);
+        try { sendResponse({ error: String(e && e.message || e), start: false, accepted: false, reason: 'background error' }); } catch (_) {}
+      }
     })(); // Immediately-invoked async function
     return true; // Indicates that the response is sent asynchronously
 });
