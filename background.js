@@ -266,8 +266,10 @@ The output should be ready to be used directly as the new system prompt.`;
 }
 
 
-// We need the actual function that does the blocking
-function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, allowedPostKeys) {
+// We need the actual function that does the blocking.
+// severityView (debug, optional): { threshold, entries, scannedKeys } — when
+// set, every visible post gets a line with its rating (see the end).
+function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, allowedPostKeys, severityView) {
     const allowedKeySet = new Set(allowedPostKeys || []);
     function normalizeApostrophes(str) {
         if (!str) return str;
@@ -454,7 +456,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
     // the white box note), so keys match before and after a reveal.
     function ownTextOf(scope) {
         let t = scope.textContent || '';
-        scope.querySelectorAll('[data-forcefield-bar], [data-forcefield-note]').forEach(n => { t = t.replace(n.textContent, ''); });
+        scope.querySelectorAll('[data-forcefield-bar], [data-forcefield-note], [data-forcefield-badge]').forEach(n => { t = t.replace(n.textContent, ''); });
         return t;
     }
     function isAllowedPost(el) {
@@ -553,7 +555,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
         if (stacksVertically(post)) { post.appendChild(bar); return; }
         let node = post;
         for (let depth = 0; depth < 4; depth++) {
-            const kids = [...node.children].filter(c => !c.dataset.forcefieldBar);
+            const kids = [...node.children].filter(c => !c.dataset.forcefieldBar && !c.dataset.forcefieldBadge);
             if (kids.length !== 1) break;
             node = kids[0];
             if (stacksVertically(node)) { node.appendChild(bar); return; }
@@ -565,6 +567,20 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
         post.appendChild(bar); // last resort
     }
 
+    // One short grey line under a post: the revealed post's links, and the
+    // debug view's rating line.
+    // contain: inline-size stops the one-line text from ever widening
+    // (or, in a row, stealing width from) the container it sits in.
+    const lineStyle = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; min-width: 0 !important; max-width: 100% !important; contain: inline-size !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
+    // Line the line up with the post text column (right of the avatar).
+    function alignWithText(host, line) {
+        const tt = host.querySelector('[data-testid="tweetText"]');
+        if (tt) {
+            const pad = tt.getBoundingClientRect().left - line.getBoundingClientRect().left;
+            if (pad > 0) line.style.setProperty('padding-left', pad + 'px', 'important');
+        }
+    }
+
     function addRevealedBar(el) {
         // Attach to the enclosing post, not the boxed element itself: the
         // boxed element is often one of X's flex ROWS (name row, avatar +
@@ -574,9 +590,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
         const bar = document.createElement('div');
         bar.dataset.forcefieldBar = '1';
         el._forcefieldBar = bar;
-        // contain: inline-size stops the one-line text from ever widening
-        // (or, in a row, stealing width from) the container it sits in.
-        bar.style.cssText = 'display: block !important; position: static !important; order: 9999 !important; flex: 0 0 auto !important; align-self: stretch !important; width: auto !important; min-width: 0 !important; max-width: 100% !important; contain: inline-size !important; box-sizing: border-box !important; text-align: left !important; white-space: nowrap !important; overflow: hidden !important; text-overflow: ellipsis !important; font-family: sans-serif !important; font-size: 11px !important; line-height: 16px !important; color: #999 !important; padding: 0 16px 6px !important; margin: 0 !important; user-select: none;';
+        bar.style.cssText = lineStyle;
         const rehide = () => {
             bar.remove(); // before applyTreatment boxes the post again
             delete el._forcefieldBar;
@@ -606,12 +620,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
         // Swallow clicks on the gaps between links too.
         bar.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); });
         placeBar(host, bar);
-        // Line the links up with the post text column (right of the avatar).
-        const tt = host.querySelector('[data-testid="tweetText"]');
-        if (tt) {
-            const pad = tt.getBoundingClientRect().left - bar.getBoundingClientRect().left;
-            if (pad > 0) bar.style.setProperty('padding-left', pad + 'px', 'important');
-        }
+        alignWithText(host, bar);
     }
 
     function applyTreatment(elementToHide) {
@@ -806,6 +815,53 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
             }
         }
     }
+
+    // Debug view: a line under every visible post with its rating, or
+    // "scanned, not flagged" when a scan covered it and nothing matched.
+    // Boxed posts already show their rating in the box. Lines are updated
+    // in place (this runs every second while scrolling), so posts don't jump.
+    const keptLines = new Set();
+    if (severityView) {
+        const level = severityView.threshold;
+        const viewItems = [];
+        for (const item of severityView.entries || []) {
+            const nb = normalizeText(item.text);
+            if (nb) viewItems.push({ text: nb, severity: typeof item.severity === 'number' ? item.severity : null });
+        }
+        const scanned = new Set(severityView.scannedKeys || []);
+        const hiddenSel = '[data-hidden-by-forcefield="whiteboxed"], [data-hidden-by-forcefield="true"], [data-forcefield-revealed]';
+        for (const article of document.querySelectorAll('article')) {
+            if (article.closest(hiddenSel) || article.querySelector(hiddenSel) || isAllowedPost(article)) continue;
+            const postNorm = normalizeText(ownTextOf(article));
+            let matched = false, unrated = false, top = 0;
+            for (const v of viewItems) {
+                if (!postNorm.includes(v.text)) continue;
+                matched = true;
+                if (v.severity === null) unrated = true; else top = Math.max(top, v.severity);
+            }
+            let text = null;
+            if (unrated) text = 'Forcefield: unrated phrase, hidden at every level';
+            else if (matched) text = `Forcefield severity ${top} · ${top >= level ? 'at or above' : 'below'} hide level ${level}`;
+            else {
+                const tt = article.querySelector('[data-testid="tweetText"]');
+                if (tt && scanned.has(normalizeText(tt.innerText || tt.textContent).slice(0, 60))) text = 'Forcefield: scanned, not flagged';
+            }
+            if (!text) continue;
+            const old = article._forcefieldBadge;
+            if (old && old.isConnected && old.textContent === text) { keptLines.add(old); continue; }
+            if (old) old.remove();
+            const line = document.createElement('div');
+            line.dataset.forcefieldBadge = '1';
+            line.textContent = text;
+            line.style.cssText = lineStyle;
+            placeBar(article, line);
+            alignWithText(article, line);
+            article._forcefieldBadge = line;
+            keptLines.add(line);
+        }
+    }
+    document.querySelectorAll('[data-forcefield-badge]').forEach(n => { if (!keptLines.has(n)) n.remove(); });
+
     if (elementsAffected > 0) {
         console.log(`[Forcefield Content Blocker (from SW)] Scan finished. ${debugMode ? 'Highlighted' : 'Hid'} ${elementsAffected} elements.`);
     } else {
@@ -822,18 +878,25 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
     // Posts the user marked "Bad block": never box these again.
     // Bad block verdicts from before allowedPosts existed (2.7.1 and earlier)
     // only live in twitterActivity.badBlock; their status links count too.
-    const { allowedPosts, twitterActivity } = await chrome.storage.local.get(['allowedPosts', 'twitterActivity']);
+    const { allowedPosts, twitterActivity, severityDebug } = await chrome.storage.local.get(['allowedPosts', 'twitterActivity', 'severityDebug']);
     const allowedKeys = (allowedPosts || []).flatMap(p => p.keys || [])
         .concat(((twitterActivity && twitterActivity.badBlock) || []).filter(e => e.url).map(e => 'url:' + e.url.split(/[?#]/)[0]));
     // Hide level: rated entries below it are left out, so their posts show.
     // The page script un-boxes everything first, so raising the level brings
     // posts back on the next run.
     const { hideThreshold } = await chrome.storage.sync.get(['hideThreshold']);
-    const toHide = entriesToHide(blockList, hideThresholdFrom(hideThreshold));
+    const threshold = hideThresholdFrom(hideThreshold);
+    const toHide = entriesToHide(blockList, threshold);
+    // Debug view (popup checkbox): the page labels every visible post too.
+    let severityView = null;
+    if (severityDebug) {
+        const { scannedTweetKeys } = chrome.storage.session ? await chrome.storage.session.get(['scannedTweetKeys']) : {};
+        severityView = { threshold, entries: blockList || [], scannedKeys: scannedTweetKeys || [] };
+    }
     chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: actualContentBlockingFunction,
-            args: [toHide, debugMode, whiteboxMode, allowedKeys]
+            args: [toHide, debugMode, whiteboxMode, allowedKeys, severityView]
         }).catch(err => {
             if (err.message.includes("No tab with id") || 
                 err.message.includes("Cannot access") ||
@@ -1080,11 +1143,14 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     }
 });
 
-// The Hide level slider moved: re-apply the blocklist on every open page of an
-// allowed site, so posts at or above the new level get boxed and posts below
-// it come back, without waiting for the next scroll.
+// The Hide level slider moved, or the severity debug view was switched:
+// re-apply the blocklist on every open page of an allowed site, so posts at
+// or above the new level get boxed and posts below it come back, without
+// waiting for the next scroll.
 chrome.storage.onChanged.addListener(async (changes, area) => {
-    if (area !== 'sync' || !changes.hideThreshold) return;
+    const levelMoved = area === 'sync' && changes.hideThreshold;
+    const debugSwitched = area === 'local' && changes.severityDebug;
+    if (!levelMoved && !debugSwitched) return;
     const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
     if (!blockList || blockList.length === 0) return;
     let tabs = [];
@@ -1777,6 +1843,22 @@ const pendingScanText = {};
 const pendingScanTweets = {};
 
 
+// Keys of tweets a finished scan covered, so the severity debug view can say
+// "scanned, not flagged" rather than nothing. Session storage: it empties
+// when the browser closes. Never throws: a failed write only costs the label.
+const SCANNED_KEYS_MAX = 500;
+async function recordScannedTweets(texts) {
+    try {
+        if (!texts || texts.length === 0 || !chrome.storage.session) return;
+        const { scannedTweetKeys } = await chrome.storage.session.get(['scannedTweetKeys']);
+        const fresh = texts.map(tweetScanKey).filter(Boolean);
+        const kept = (scannedTweetKeys || []).filter(k => !fresh.includes(k));
+        await chrome.storage.session.set({ scannedTweetKeys: kept.concat(fresh).slice(-SCANNED_KEYS_MAX) });
+    } catch (e) {
+        console.warn('[Forcefield BG] Could not record scanned tweets:', e);
+    }
+}
+
 // Per-tweet path for X when the user picked Jev as the X engine: rate each
 // tweet 0-10 and keep every tweet rated 1 or more on the blocklist with its
 // rating. The page hides the ones at or above the Hide level.
@@ -1789,6 +1871,7 @@ async function scanTweetsWithJev(tweets, tabId, allConfig) {
         tasteContext: await getTasteContext(),
         typesafeApiKey: allConfig.typesafeApiKey
     });
+    await recordScannedTweets(results.filter(r => r.severity !== null).map(r => r.tweet.text));
     const flagged = results.filter(r => r.severity !== null && r.severity >= 1);
     const hiddenNow = flagged.filter(r => r.severity >= threshold).length;
     logToPageConsole(tabId, `[Forcefield AI] Jev rated ${results.length} tweet(s); ${flagged.length} flagged, ${hiddenNow} at or above hide level ${threshold}.`,
@@ -1860,6 +1943,7 @@ async function handleNewContent(text, tabId, tweets) {
             tweets: Array.isArray(tweets) ? tweets.length : 0 // for the per-100-tweets cost comparison
         });
         const suggestions = extractRatedNegativeTags(aiResponseContent);
+        if (Array.isArray(tweets) && tweets.length > 0) await recordScannedTweets(tweets.map(t => t.text));
 
         console.log(`${logPrefix} Received ${suggestions.length} suggestions from AI.`);
         const threshold = hideThresholdFrom(allConfig.hideThreshold);

@@ -24,7 +24,7 @@ const check = (c, name, d) => { if (c) pass++; else { fail++; console.log('  FAI
 
 // jevSeverities: the 0-10 rating the fake Jev gives each tweet (null = no answer).
 async function run(sync, tweets, jevSeverities, llmReply = '<Negative severity="6">bad sentence</Negative>\n<Negative>unrated sentence</Negative>') {
-    const log = { llm: [], jev: [], added: [], triggered: 0, page: [] };
+    const log = { llm: [], jev: [], added: [], triggered: 0, page: [], recorded: [] };
     const box = {
         console: { log() {}, warn() {}, error() {} },
         chrome: { storage: {
@@ -41,7 +41,8 @@ async function run(sync, tweets, jevSeverities, llmReply = '<Negative severity="
             return args.tweets.map((t, i) => ({ tweet: t, score: null, severity: jevSeverities[i] }));
         },
         addSuggestionsToBlocklist: async (s, tab, w, d, source) => log.added.push({ s, source: source || 'ai_continuous' }),
-        triggerPageBlock: () => { log.triggered++; }
+        triggerPageBlock: () => { log.triggered++; },
+        recordScannedTweets: async texts => { log.recorded.push(texts); }
     };
     // Real helpers from llm.js (textModelFor, usesJevOnX, the severity scale,
     // extractRatedNegativeTags); the stubs above are restored on top for
@@ -67,6 +68,7 @@ const texts = added => added[0].s.map(x => typeof x === 'string' ? x : `${x.text
         check(l.added.length === 1 && l.added[0].source === 'jev' && texts(l.added) === 'first tweet=9|third=3', 'every tweet rated 1+ is stored as a whole tweet with its rating; a 0 is not', JSON.stringify(l.added));
         check(l.triggered === 1, 'blocker re-applied after the Jev scan');
         check(l.page.some(p => /Jev rated 3 tweet\(s\); 2 flagged, 2 at or above hide level 3/.test(p)), 'page console: default hide level 3', l.page.join(' / '));
+        check(l.recorded.length === 1 && l.recorded[0].join('|') === 'first tweet|second tweet|third', 'every rated tweet (0 too) recorded as scanned', JSON.stringify(l.recorded));
     }
     {
         const l = await run({ xEngine: 'jev', typesafeApiKey: 'k', hideThreshold: 8 }, T, [9, 0, 3]);
@@ -77,10 +79,12 @@ const texts = added => added[0].s.map(x => typeof x === 'string' ? x : `${x.text
     {
         const l = await run({ xEngine: 'jev', typesafeApiKey: 'k' }, T, [0, null, 0]);
         check(l.added.length === 0 && l.triggered === 1, 'nothing rated 1+ -> nothing added, blocker still re-applied');
+        check(l.recorded[0].join('|') === 'first tweet|third', 'a tweet Jev did not answer is not recorded as scanned', JSON.stringify(l.recorded));
     }
     {
         const l = await run({ xEngine: 'llm', anthropicApiKey: 'a', typesafeApiKey: 'k', customSystemPrompt: 'MY RULES' }, T, []);
         check(l.jev.length === 0 && l.llm.length === 1, 'X + text model selected -> text model only');
+        check(l.recorded.length === 1 && l.recorded[0].join('|') === 'first tweet|second tweet|third', 'text model scan records every tweet in the batch', JSON.stringify(l.recorded));
         check(l.added.length === 1 && l.added[0].source === 'ai_continuous' && texts(l.added) === 'bad sentence=6|unrated sentence=null', 'text model tags carry their rating; a tag without one stays unrated', JSON.stringify(l.added));
         const sys = l.llm[0].system;
         check(sys === `MY RULES\n\n${l.SEVERITY_INSTRUCTIONS}\n\nTASTE`, 'system prompt = your rules, then the 1-10 rating rules, then the taste profile', sys.slice(0, 200));
@@ -95,6 +99,7 @@ const texts = added => added[0].s.map(x => typeof x === 'string' ? x : `${x.text
     {
         const l = await run({ xEngine: 'jev', anthropicApiKey: 'a', typesafeApiKey: 'k' }, [], []);
         check(l.jev.length === 0 && l.llm.length === 1, 'other sites (no per-tweet items) -> text model even with Jev selected');
+        check(l.recorded.length === 0, 'other sites: nothing recorded');
     }
     {
         const l = await run({ selectedAiModel: 'jev-latest', typesafeApiKey: 'k', anthropicApiKey: 'a' }, T, [9, 1, 1]);

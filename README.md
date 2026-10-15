@@ -58,6 +58,8 @@ The **Hide Level** slider in the popup (right under the scan button, and under S
 
 Every rated post stays on the blocklist whatever the level, so moving the slider takes effect at once on open pages, in both directions, with no rescan and no extra cost. The white box shows each post's rating, so you can see which level would let it through.
 
+To calibrate, tick **Debug: show each post's severity under it** (under either slider). Every visible post on X then gets a small grey line under it: `Forcefield severity 2 · below hide level 5` for a rated post you're still seeing, `Forcefield: scanned, not flagged` for one a scan covered without flagging, and nothing for posts not scanned yet. In highlight mode, flagged posts stay visible and get the line too. The list of scanned posts lives in session storage, so it empties when the browser closes.
+
 Claude and Gemini rate inside their reply (`<Negative severity="6">...</Negative>`). Jev by TypeSafe rates each tweet with a six-level score question (nothing to hide, then the five bands), mapped onto the same 0-10 scale. Phrases you add or select yourself have no rating and are hidden at every level, and so are posts flagged before version 2.10.0, until the AI flags them again.
 
 ## Cost

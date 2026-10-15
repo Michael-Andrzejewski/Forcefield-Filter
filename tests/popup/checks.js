@@ -46,6 +46,14 @@
         sliders[1].value = '1'; sliders[1].dispatchEvent(new Event('change')); await sleep(50);
         check(__areas.sync.hideThreshold === 1 && sliders[0].value === '1' && labels()[0] === 'Hides everything flagged, even mildly unwanted posts.', '[haiku] developer slider drives the simple one', labels()[0]);
         check(badges() === '2+,6+', '[haiku] nothing greyed at level 1', badges());
+        // Severity debug view checkbox: one under each slider, saved locally.
+        const dbg = [...document.querySelectorAll('.severity-debug')];
+        check(dbg.length === 2 && dbg.every(b => b.type === 'checkbox' && !b.checked), '[haiku] two severity debug checkboxes, off by default', dbg.length);
+        dbg[1].checked = true; dbg[1].dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.local.severityDebug === true && dbg[0].checked, '[haiku] ticking either saves it and ticks both', JSON.stringify(__areas.local.severityDebug));
+        dbg[0].checked = false; dbg[0].dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.local.severityDebug === false && !dbg[1].checked, '[haiku] unticking saves off');
+        dbg[0].checked = true; dbg[0].dispatchEvent(new Event('change')); await sleep(20); // on, for the screenshot
         sliders[0].value = '9'; sliders[0].dispatchEvent(new Event('change')); await sleep(50); // a relaxed day, for the screenshot
         main.value = 'jev-latest'; main.dispatchEvent(new Event('change')); await sleep(50); // leave Jev showing for the screenshot
     }
@@ -61,6 +69,7 @@
         check(main.value === 'jev-latest' && dev.value === 'jev-latest', '[jev] saved Jev selection shows in both dropdowns');
         const sliders = [...document.querySelectorAll('.hide-threshold')];
         check(sliders.every(s => s.value === '9'), '[jev] saved hide level shown', sliders.map(s => s.value).join(','));
+        check([...document.querySelectorAll('.severity-debug')].every(b => b.checked), '[jev] saved debug view shown ticked');
         check(document.querySelector('.hide-threshold-label').textContent === 'Hides 9-10: genuinely hateful only. Shows 1-8.', '[jev] label for 9', document.querySelector('.hide-threshold-label').textContent);
     }
     const pre = document.createElement('pre');

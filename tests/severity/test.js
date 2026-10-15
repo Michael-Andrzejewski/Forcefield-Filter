@@ -74,6 +74,41 @@ const L = box.self.ForcefieldLLM;
     check(/<Negative severity="\d+">/.test(L.DEFAULT_SYSTEM_PROMPT) && !/<Negative>Absolutely/.test(L.DEFAULT_SYSTEM_PROMPT), 'default prompt example shows ratings');
 }
 
+// --- Debug view: tweet keys match the page's own normalization ---
+{
+    const page = { };
+    vm.createContext(page);
+    vm.runInContext(extract('function normalizeApostrophes') + '\n' + extract('function normalizeText') + '\n;globalThis.__n = normalizeText;', page);
+    const samples = [
+        'Plain tweet text that is long enough to be cut at sixty characters for the key, yes',
+        'It’s “quoted” — with an en–dash, a minus − and an ellipsis…',
+        '  Leading space\nand a line break\tand a TAB  ',
+        '`backtick` and ´acute´ ‘single’ «guillemets» „low”',
+        'Emoji 😀 and CJK 漢字 stay as they are'
+    ];
+    const same = samples.every(s => L.tweetScanKey(s) === page.__n(s).slice(0, 60));
+    check(same, 'tweetScanKey = the page\'s normalizeText, first 60 characters', JSON.stringify(samples.map(s => [L.tweetScanKey(s), page.__n(s).slice(0, 60)])));
+    check(L.tweetScanKey('') === '' && L.tweetScanKey(undefined) === '', 'empty text -> empty key');
+}
+
+// --- recordScannedTweets ---
+async function record(start, texts, { noSession = false } = {}) {
+    const session = { scannedTweetKeys: start };
+    const warnings = [];
+    const b = {
+        console: { log() {}, warn: (...a) => warnings.push(a.join(' ')) },
+        tweetScanKey: L.tweetScanKey,
+        chrome: { storage: noSession ? {} : { session: {
+            get: async () => ({ scannedTweetKeys: session.scannedTweetKeys }),
+            set: async o => Object.assign(session, JSON.parse(JSON.stringify(o)))
+        } } }
+    };
+    vm.createContext(b);
+    vm.runInContext('const SCANNED_KEYS_MAX = 500;\n' + extract('async function recordScannedTweets') + '\n;globalThis.__r = recordScannedTweets;', b);
+    await b.__r(texts);
+    return { keys: session.scannedTweetKeys, warnings };
+}
+
 // --- addSuggestionsToBlocklist ---
 async function add(start, suggestions, source) {
     const store = { blockList: JSON.parse(JSON.stringify(start)) };
@@ -93,6 +128,19 @@ async function add(start, suggestions, source) {
     return { list: store.blockList, writes: store.writes || 0, sent };
 }
 (async () => {
+    {
+        const r = await record(undefined, ['First Tweet', 'second  tweet']);
+        check(r.keys.join('|') === 'firsttweet|secondtweet', 'scanned tweets recorded as keys', JSON.stringify(r.keys));
+        const r2 = await record(['a', 'firsttweet', 'b'], ['First tweet', 'new one']);
+        check(r2.keys.join('|') === 'a|b|firsttweet|newone', 'a re-scanned tweet moves to the newest end, no duplicates', JSON.stringify(r2.keys));
+        const many = Array.from({ length: 600 }, (_, i) => 'tweet ' + i);
+        const r3 = await record([], many);
+        check(r3.keys.length === 500 && r3.keys[0] === 'tweet100' && r3.keys[499] === 'tweet599', 'capped at the newest 500', r3.keys.length + ' ' + r3.keys[0]);
+        const r4 = await record(['x'], []);
+        check(r4.keys.join('|') === 'x', 'nothing scanned -> unchanged');
+        const r5 = await record(undefined, ['t'], { noSession: true });
+        check(r5.warnings.length === 0, 'no session storage -> skipped quietly');
+    }
     {
         const r = await add([], [{ text: ' rated ', severity: 6 }, { text: 'unrated', severity: null }, 'plain string'], 'ai_continuous');
         check(JSON.stringify(r.list) === JSON.stringify([

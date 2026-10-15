@@ -79,6 +79,22 @@ hideThresholdInputs.forEach(input => {
     });
 });
 
+// Severity debug view (local `severityDebug`): a line under every post on
+// the page with its rating. The background re-applies on open pages when it
+// changes.
+const severityDebugBoxes = [...document.querySelectorAll('.severity-debug')];
+function loadSeverityDebug() {
+    chrome.storage.local.get(['severityDebug'], (r) => {
+        severityDebugBoxes.forEach(b => { b.checked = !!r.severityDebug; });
+    });
+}
+severityDebugBoxes.forEach(box => {
+    box.addEventListener('change', () => {
+        severityDebugBoxes.forEach(b => { b.checked = box.checked; });
+        chrome.storage.local.set({ severityDebug: box.checked });
+    });
+});
+
 function updateJevSettingsVisibility(selectedModel) {
     document.querySelectorAll('.jev-settings').forEach(box => {
         box.style.display = selectedModel === JEV_MODEL_ID ? '' : 'none';
@@ -97,6 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadAiModelSelection();
     loadApiKeys(); // Load API keys
     loadHideThreshold();
+    loadSeverityDebug();
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added

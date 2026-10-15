@@ -11,6 +11,7 @@ let pass = 0, fail = 0;
 const check = (c, name, d) => { if (c) pass++; else { fail++; console.log('  FAIL', name + (d ? ' :: ' + d : '')); } };
 
 const store = {
+    session: { scannedTweetKeys: ['somescannedtweet'] },
     sync: { allowedSites: ['x.com', 'quora.com'], hideThreshold: 3 },
     local: {
         isScanning: false, whiteboxMode: true, debugMode: false,
@@ -47,7 +48,7 @@ const anything = () => new Proxy(function () {}, {
 });
 const orAnything = obj => new Proxy(obj, { get: (t, k) => (k in t ? t[k] : anything()) });
 const chrome = orAnything({
-    storage: orAnything({ sync: storageArea(store.sync), local: storageArea(store.local), onChanged: { addListener: fn => changeListeners.push(fn) } }),
+    storage: orAnything({ sync: storageArea(store.sync), local: storageArea(store.local), session: storageArea(store.session), onChanged: { addListener: fn => changeListeners.push(fn) } }),
     tabs: orAnything({ query: async () => tabs, get: async id => tabs.find(t => t.id === id) }),
     scripting: orAnything({
         executeScript: async opts => { executed.push(opts); return []; },
@@ -92,6 +93,24 @@ async function moveSlider(to) {
     {
         const runs = await moveSlider(5);
         check(runs.every(r => r.texts === 'divisive|hostile|typed by hand'), 'level 5: the 5 is included', JSON.stringify(runs));
+        check(blockerRuns().every(e => e.args[4] === null), 'debug view off -> no view sent');
+    }
+    {
+        // Severity debug view switched on in the popup.
+        store.local.severityDebug = true;
+        executed.length = 0;
+        changeListeners.forEach(fn => fn({ severityDebug: { oldValue: false, newValue: true } }, 'local'));
+        await sleep(80);
+        const runs = blockerRuns();
+        check(runs.map(e => e.target.tabId).sort().join(',') === '1,2', 'debug view switched on -> blocker re-run on allowed tabs', runs.length);
+        const view = runs[0] && runs[0].args[4];
+        check(view && view.threshold === 5 && view.entries.length === 4 && view.scannedKeys.join() === 'somescannedtweet', 'view carries level 5, all 4 entries and the scanned keys', JSON.stringify(view));
+        check(runs[0] && runs[0].args[0].map(i => i.text).join('|') === 'divisive|hostile|typed by hand', 'hiding unchanged by the debug view');
+        store.local.severityDebug = false;
+        executed.length = 0;
+        changeListeners.forEach(fn => fn({ severityDebug: { oldValue: true, newValue: false } }, 'local'));
+        await sleep(80);
+        check(blockerRuns().length === 2 && blockerRuns().every(e => e.args[4] === null), 'switched off -> re-run without the view, so the lines are removed');
     }
     {
         executed.length = 0;

@@ -19,7 +19,7 @@ if (start < 0 || end < 0) { console.log('trigger: could not find triggerPageBloc
 let pass = 0, fail = 0;
 const check = (c, name, d) => { if (c) pass++; else { fail++; console.log('  FAIL', name + (d ? ' :: ' + d : '')); } };
 
-async function run(local, sync = {}, blockList = [{ text: 'x', level: 1 }]) {
+async function run(local, sync = {}, blockList = [{ text: 'x', level: 1 }], session = {}) {
     const calls = [];
     const getter = area => async keys => { const r = {}; keys.forEach(k => { if (k in area) r[k] = area[k]; }); return r; };
     const box = {
@@ -27,7 +27,7 @@ async function run(local, sync = {}, blockList = [{ text: 'x', level: 1 }]) {
         self: {},
         actualContentBlockingFunction: function () {},
         chrome: {
-            storage: { local: { get: getter(local) }, sync: { get: getter(sync) } },
+            storage: { local: { get: getter(local) }, sync: { get: getter(sync) }, session: { get: getter(session) } },
             scripting: { executeScript: async opts => { calls.push(opts); return []; } }
         }
     };
@@ -51,8 +51,26 @@ const sent = calls => calls[0].args[0].map(i => i.text).join('|');
         const calls = await run({});
         check(calls.length === 1, 'runs the blocker once');
         const args = calls[0].args;
-        check(args.length === 4 && Array.isArray(args[3]) && args[3].length === 0, 'no allowed posts -> empty key list', JSON.stringify(args));
+        check(args.length === 5 && Array.isArray(args[3]) && args[3].length === 0, 'no allowed posts -> empty key list', JSON.stringify(args));
         check(args[2] === true && args[1] === false, 'passes whitebox and debug flags through');
+        check(args[4] === null, 'severity debug view off by default');
+    }
+    // Severity debug view.
+    {
+        const calls = await run({ severityDebug: true }, { hideThreshold: 6 }, RATED, { scannedTweetKeys: ['abc', 'def'] });
+        const view = calls[0].args[4];
+        check(view && view.threshold === 6, 'debug view carries the hide level', JSON.stringify(view));
+        check(view && view.entries.length === 5, 'debug view gets every entry, including ones below the level', view && view.entries.length);
+        check(sent(calls) === 'hateful|typed by hand|flagged before 2.10', 'hiding still uses only entries at or above the level', sent(calls));
+        check(view && view.scannedKeys.join(',') === 'abc,def', 'debug view gets the scanned tweet keys');
+    }
+    {
+        const calls = await run({ severityDebug: true }, {}, RATED);
+        check(calls[0].args[4].scannedKeys.length === 0 && calls[0].args[4].threshold === 3, 'nothing scanned yet -> empty key list, default level');
+    }
+    {
+        const calls = await run({ severityDebug: false }, {}, RATED, { scannedTweetKeys: ['abc'] });
+        check(calls[0].args[4] === null, 'switched off -> no view');
     }
     {
         const calls = await run({

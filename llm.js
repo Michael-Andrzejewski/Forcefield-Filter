@@ -75,6 +75,22 @@ function describeHideThreshold(n) {
     return `Hides ${n === 10 ? '10' : n + '-10'}: ${what}. Shows ${n === 2 ? '1' : '1-' + (n - 1)}.`;
 }
 
+// A tweet's identity for the severity debug view: the background records it
+// for each tweet a scan covered, and the page computes it from the post's
+// text. Must match normalizeText in actualContentBlockingFunction exactly
+// (tests/severity checks this), then keeps the first 60 characters.
+function tweetScanKey(text) {
+    if (!text) return '';
+    return String(text)
+        .replace(/[‘’`´]/g, "'")
+        .replace(/[“”„«»]/g, '"')
+        .replace(/[–—―−]/g, '-')
+        .replace(/…/g, '...')
+        .replace(/\s+/g, '')
+        .toLowerCase()
+        .slice(0, 60);
+}
+
 // Appended to the system prompt on every blocking scan, after the user's own
 // rules, so a custom prompt gets ratings too.
 const SEVERITY_INSTRUCTIONS = `Rate every tag from 1 to 10 for how much this user would want it hidden. Use the highest band that fits; within a band, the higher number means stronger or more certain.
@@ -328,7 +344,8 @@ self.ForcefieldLLM = {
     AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
     JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX, formatSpendByModel,
     extractNegativeTags, extractRatedNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING,
-    SEVERITY_BANDS, DEFAULT_HIDE_THRESHOLD, SEVERITY_INSTRUCTIONS, severityBand, hideThresholdFrom, entriesToHide, describeHideThreshold
+    SEVERITY_BANDS, DEFAULT_HIDE_THRESHOLD, SEVERITY_INSTRUCTIONS, severityBand, hideThresholdFrom, entriesToHide, describeHideThreshold,
+    tweetScanKey
 };
 
 // --- Default prompts (single source of truth for the service worker and the popup) ---

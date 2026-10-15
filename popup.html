@@ -327,6 +327,16 @@
       margin: 6px 0 0 0;
     }
 
+    .severity-debug-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #2c3e50;
+      margin: 6px 0 0 0;
+      cursor: pointer;
+    }
+
     .hide-level-note {
       font-size: 10px;
       color: #7f8c8d;
@@ -484,6 +494,7 @@
             <input type="range" class="hide-threshold" min="1" max="10" step="1" aria-label="Hide level, 1 to 10">
             <div class="hide-level-ends"><span>1 · hide more</span><span>hide less · 10</span></div>
             <p class="hide-threshold-label"></p>
+            <label class="severity-debug-row"><input type="checkbox" class="severity-debug"> Debug: show each post's severity under it</label>
             <p class="hide-level-note">The AI rates each flagged post 1-10. Phrases you add yourself, and posts blocked before 2.10, stay hidden at every level.</p>
           </div>
         </div>
@@ -576,6 +587,7 @@
             <input type="range" class="hide-threshold" min="1" max="10" step="1" aria-label="Hide level, 1 to 10">
             <div class="hide-level-ends"><span>1 · hide more</span><span>hide less · 10</span></div>
             <p class="hide-threshold-label"></p>
+            <label class="severity-debug-row"><input type="checkbox" class="severity-debug"> Debug: show each post's severity under it</label>
           </div>
 
           <div class="action-buttons">

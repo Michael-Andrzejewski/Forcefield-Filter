@@ -251,6 +251,71 @@ async function cycle(p, level, label) {
     check(!boxed(1), '[severity] empty list (everything below the Hide level) un-boxes the post');
   }
 
+  // Severity debug view: one grey line under each visible post with its
+  // rating, "scanned, not flagged", or nothing when it was never scanned.
+  {
+    const keyOf = p => { const tt = art(p).querySelector('[data-testid=tweetText]'); return (tt.innerText || tt.textContent)
+      .replace(/[‘’`´]/g, "'").replace(/[“”„«»]/g, '"').replace(/[–—―−]/g, '-')
+      .replace(/…/g, '...').replace(/\s+/g, '').toLowerCase().slice(0, 60); };
+    const line = p => { const a = art(p); const l = a && a._forcefieldBadge; return l && l.isConnected ? l : null; };
+    const lineText = p => { const l = line(p); return l ? l.textContent : null; };
+    const lineCount = () => document.querySelectorAll('[data-forcefield-badge]').length;
+    const note = p => { const b = boxed(p); const n = b && b.querySelector('[data-forcefield-note]'); return n ? n.textContent : null; };
+    const entries = [
+      { text: PHRASES[0].slice(0, 40), level: 5, severity: 7 },
+      { text: PHRASES[1].slice(0, 40), level: 5, severity: 2 },
+      { text: PHRASES[2].slice(0, 40), level: 5 }
+    ];
+    const toHide = entries.filter(e => typeof e.severity !== 'number' || e.severity >= 5);
+    const view = () => ({ threshold: 5, entries, scannedKeys: [keyOf(3)] });
+    const run = (dbg, wb, v) => { try { actualContentBlockingFunction(toHide, dbg, wb, [], v); } catch (e) { results.crashes.push(String(e && e.stack || e)); results.fail++; } layout(); };
+
+    reset();
+    run(false, true, view());
+    check(note(0) === 'Blocked by Forcefield (severity 7) - click to reveal' && !line(0), '[sevview] boxed post: rating in the box, no extra line', note(0) + ' / ' + lineText(0));
+    check(lineText(1) === 'Forcefield severity 2 · below hide level 5', '[sevview] post below the level shows its rating', lineText(1));
+    check(!!boxed(2) && !line(2), '[sevview] unrated boxed post: no line');
+    check(lineText(3) === 'Forcefield: scanned, not flagged', '[sevview] scanned post with no match says so', lineText(3));
+    check(!line(4), '[sevview] never-scanned post: no line');
+    check(lineCount() === 2, '[sevview] exactly two lines on the page', lineCount());
+    {
+      const a = art(1), l = line(1), g = __geom[1];
+      const t = a.querySelector('[data-testid=tweetText]').getBoundingClientRect(), lr = l.getBoundingClientRect();
+      check(lr.height <= 24 && lr.top >= t.bottom - 1, '[sevview] the line is one short line below the post text', `h=${lr.height} top=${lr.top} textBottom=${t.bottom}`);
+      check(Math.abs(t.width - g.w) < 0.5 && Math.abs(t.left - g.l) < 0.5, '[sevview] post text keeps its width and position', `was ${g.l}+${g.w} now ${t.left}+${t.width}`);
+      check(Math.abs(lr.left + parseFloat(getComputedStyle(l).paddingLeft) - t.left) <= 1, '[sevview] line lines up with the post text');
+    }
+    const kept = line(1);
+    run(false, true, view());
+    check(line(1) === kept && lineCount() === 2, '[sevview] re-run keeps the same line (no flicker while scrolling)');
+    // The lines must not change what the blocker matches or how posts are keyed.
+    run(false, true, view());
+    check(!!boxed(0) && !!boxed(2) && !boxed(1), '[sevview] blocking unchanged with lines present');
+
+    // Red highlight mode: hidden posts stay visible, so they get lines too.
+    run(true, false, view());
+    check(lineText(0) === 'Forcefield severity 7 · at or above hide level 5', '[sevview] highlight mode: rating at or above the level', lineText(0));
+    check(lineText(2) === 'Forcefield: unrated phrase, hidden at every level', '[sevview] highlight mode: unrated phrase', lineText(2));
+    check(lineText(1) === 'Forcefield severity 2 · below hide level 5', '[sevview] highlight mode: below-level post unchanged', lineText(1));
+
+    // Revealed post: its own Hide again line, no rating line.
+    run(false, true, view());
+    click(boxed(0) && (boxed(0).firstElementChild || boxed(0)));
+    run(false, true, view());
+    check(!boxed(0) && !line(0) && bars().length === 1, '[sevview] revealed post: links line only', `boxed=${!!boxed(0)} line=${lineText(0)} bars=${bars().length}`);
+
+    // A different level re-labels in place.
+    const lowerView = Object.assign(view(), { threshold: 2 });
+    try { actualContentBlockingFunction(entries.filter(e => typeof e.severity !== 'number' || e.severity >= 2), false, true, [], lowerView); } catch (e) { results.fail++; }
+    layout();
+    check(!!boxed(1) && !line(1), '[sevview] level 2: the 2 is boxed now, its line gone');
+
+    // Switched off: every line removed.
+    run(false, true, null);
+    check(lineCount() === 0, '[sevview] switched off -> no lines', lineCount());
+    check(window.__opened === 0, '[sevview] nothing opened a post');
+  }
+
   // Extension reloaded while a post is revealed: verdict links must not
   // throw or write anything (the storage API is gone).
   reset();

@@ -12,7 +12,7 @@ for sc in haiku xengine xengine-llm jev; do
     haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{"blockList":[{"text":"mild snark","level":8,"source":"ai_continuous","severity":2},{"text":"partisan dunk","level":8,"source":"jev","severity":6},{"text":"typed by hand","level":8,"source":"manual"}],"aiSpendTotals":{"since":1790800000000,"models":{"claude-haiku-4-5":{"cost":0.31,"calls":42,"tweetCost":0.31,"tweets":610},"jev-latest":{"cost":0.0021,"calls":30,"tweetCost":0.0021,"tweets":700}}}}}' ;;
     xengine) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5","xEngine":"jev"},"local":{}}' ;;
     xengine-llm) seed='{"sync":{"selectedAiModel":"claude-sonnet-4-6","xEngine":"llm"},"local":{}}' ;;
-    jev) seed='{"sync":{"selectedAiModel":"jev-latest","hideThreshold":9},"local":{}}' ;;
+    jev) seed='{"sync":{"selectedAiModel":"jev-latest","hideThreshold":9},"local":{"severityDebug":true}}' ;;
   esac
   node -e '
     const fs=require("fs"); const [root, out, seed, sc, dir]=process.argv.slice(1);
