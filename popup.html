@@ -295,6 +295,44 @@
       background: rgba(255, 255, 255, 0.9);
     }
 
+    .tag-severity {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 8px;
+      background: rgba(231, 76, 60, 0.15);
+    }
+
+    .tag-severity.below-level {
+      color: #7f8c8d;
+      background: rgba(127, 140, 141, 0.15);
+    }
+
+    .hide-level input[type="range"] {
+      width: 100%;
+      margin: 4px 0 0 0;
+      accent-color: #3498db;
+    }
+
+    .hide-level-ends {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: #7f8c8d;
+    }
+
+    .hide-threshold-label {
+      font-size: 11px;
+      color: #2c3e50;
+      margin: 6px 0 0 0;
+    }
+
+    .hide-level-note {
+      font-size: 10px;
+      color: #7f8c8d;
+      margin: 4px 0 0 0;
+    }
+
     .tag-remove {
       background: rgba(231, 76, 60, 0.2);
       border: none;
@@ -438,6 +476,19 @@
         </div>
       </div>
 
+      <!-- Hide Level Card -->
+      <div class="card">
+        <div class="ai-model-section">
+          <div class="section-title">Hide Level</div>
+          <div class="hide-level">
+            <input type="range" class="hide-threshold" min="1" max="10" step="1" aria-label="Hide level, 1 to 10">
+            <div class="hide-level-ends"><span>1 · hide more</span><span>hide less · 10</span></div>
+            <p class="hide-threshold-label"></p>
+            <p class="hide-level-note">The AI rates each flagged post 1-10. Phrases you add yourself, and posts blocked before 2.10, stay hidden at every level.</p>
+          </div>
+        </div>
+      </div>
+
       <!-- Autonomous Curation Card -->
       <div class="card">
         <div class="ai-model-section">
@@ -457,10 +508,7 @@
             <!-- Options will be populated by JavaScript -->
           </select>
           <div class="jev-settings" style="margin-top: 6px; display: none;">
-            <label style="font-size: 11px; color: #2c3e50;">Hide tweets scoring at least
-              <input type="number" class="jev-threshold" min="0.05" max="0.95" step="0.05" style="width: 56px;">
-            </label>
-            <p style="font-size: 10px; color: #7f8c8d; margin: 4px 0 0 0;">0 to 1. Higher hides less. Needs a TypeSafe key under Developer &gt; API Keys. For now, sites other than X use Haiku.</p>
+            <p style="font-size: 10px; color: #7f8c8d; margin: 0;">Jev rates each tweet on the same 1-10 scale as Haiku; the Hide Level above applies to both. Needs a TypeSafe key under Developer &gt; API Keys. For now, sites other than X use Haiku.</p>
           </div>
         </div>
       </div>
@@ -522,7 +570,14 @@
             <p id="devSpendDisplay" style="font-size: 11px; margin-top: 4px; color: #7f8c8d;"></p>
             <p class="spend-by-model" style="font-size: 10px; margin-top: 2px; color: #7f8c8d; white-space: pre-line;"></p>
           </div>
-          
+
+          <div class="hide-level" style="margin-bottom: 10px;">
+            <div class="section-title">Hide Level</div>
+            <input type="range" class="hide-threshold" min="1" max="10" step="1" aria-label="Hide level, 1 to 10">
+            <div class="hide-level-ends"><span>1 · hide more</span><span>hide less · 10</span></div>
+            <p class="hide-threshold-label"></p>
+          </div>
+
           <div class="action-buttons">
             <button class="action-btn primary" id="blockButton">Block Content</button>
             <button class="action-btn secondary" id="selectAndBlockButton">Select Element</button>
@@ -560,9 +615,7 @@
               <!-- Options will be populated by JavaScript -->
             </select>
             <div class="jev-settings" style="margin-top: 6px; display: none;">
-              <label style="font-size: 11px; color: #2c3e50;">Hide tweets scoring at least
-                <input type="number" class="jev-threshold" min="0.05" max="0.95" step="0.05" style="width: 56px;">
-              </label>
+              <p style="font-size: 10px; color: #7f8c8d; margin: 0;">Jev rates each tweet 1-10, like Haiku. The Hide Level under Scanning Controls applies to both.</p>
             </div>
           </div>
         </div>

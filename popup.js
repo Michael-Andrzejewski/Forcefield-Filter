@@ -51,30 +51,39 @@ const geminiApiKeyInput = document.getElementById('geminiApiKey');
 const saveGeminiApiKeyButton = document.getElementById('saveGeminiApiKey');
 const typesafeApiKeyInput = document.getElementById('typesafeApiKey');
 const saveTypesafeApiKeyButton = document.getElementById('saveTypesafeApiKey');
-const jevThresholdInputs = [...document.querySelectorAll('.jev-threshold')];
-const JEV_THRESHOLD_DEFAULT = 0.5; // mirrors JEV_DEFAULT_THRESHOLD in jev.js
-
-// --- Jev threshold (shown under the model dropdowns when Jev is selected) ---
-function loadJevThreshold() {
-    chrome.storage.sync.get(['jevThreshold'], (r) => {
-        const v = typeof r.jevThreshold === 'number' ? r.jevThreshold : JEV_THRESHOLD_DEFAULT;
-        jevThresholdInputs.forEach(i => { i.value = v; });
+// --- Hide level (1-10 slider, in Simple mode and under Scanning Controls) ---
+// Saved as sync `hideThreshold`; the background re-applies the blocklist on
+// open pages when it changes. hideThresholdFrom / describeHideThreshold come
+// from llm.js.
+const hideThresholdInputs = [...document.querySelectorAll('.hide-threshold')];
+let currentHideThreshold = DEFAULT_HIDE_THRESHOLD;
+function showHideThreshold(n) {
+    hideThresholdInputs.forEach(i => { i.value = n; });
+    document.querySelectorAll('.hide-threshold-label').forEach(l => { l.textContent = describeHideThreshold(n); });
+}
+function loadHideThreshold() {
+    chrome.storage.sync.get(['hideThreshold'], (r) => {
+        currentHideThreshold = hideThresholdFrom(r.hideThreshold);
+        showHideThreshold(currentHideThreshold);
+        loadBlockList(); // the list may have rendered before the level loaded
     });
 }
+hideThresholdInputs.forEach(input => {
+    // While dragging: update the text only. On release: save.
+    input.addEventListener('input', () => showHideThreshold(hideThresholdFrom(input.value)));
+    input.addEventListener('change', () => {
+        currentHideThreshold = hideThresholdFrom(input.value);
+        showHideThreshold(currentHideThreshold);
+        chrome.storage.sync.set({ hideThreshold: currentHideThreshold });
+        loadBlockList(); // re-grey the ratings below the new level
+    });
+});
+
 function updateJevSettingsVisibility(selectedModel) {
     document.querySelectorAll('.jev-settings').forEach(box => {
         box.style.display = selectedModel === JEV_MODEL_ID ? '' : 'none';
     });
 }
-jevThresholdInputs.forEach(input => {
-    input.addEventListener('change', () => {
-        let v = parseFloat(input.value);
-        if (!isFinite(v)) v = JEV_THRESHOLD_DEFAULT;
-        v = Math.min(0.95, Math.max(0.05, v));
-        jevThresholdInputs.forEach(i => { i.value = v; });
-        chrome.storage.sync.set({ jevThreshold: v });
-    });
-});
 if (saveTypesafeApiKeyButton) {
     saveTypesafeApiKeyButton.addEventListener('click', () => saveApiKey('typesafeApiKey', typesafeApiKeyInput.value));
 }
@@ -87,7 +96,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadUserPromptPrefix();
     loadAiModelSelection();
     loadApiKeys(); // Load API keys
-    loadJevThreshold();
+    loadHideThreshold();
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
@@ -856,6 +865,15 @@ function displayBlockList(list) {
     text.className = 'tag-text';
     text.textContent = item.text; // Use item.text
     tag.appendChild(text);
+
+    // The AI's 1-10 rating; greyed when below the Hide level (not hidden now).
+    if (typeof item.severity === 'number') {
+        const sev = document.createElement('span');
+        sev.className = 'tag-severity' + (item.severity < currentHideThreshold ? ' below-level' : '');
+        sev.textContent = item.severity;
+        sev.title = `Severity ${item.severity} of 10. Hidden while the Hide level is ${item.severity} or lower.`;
+        tag.appendChild(sev);
+    }
 
     // Create number input for level
     const levelInput = document.createElement('input');

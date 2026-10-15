@@ -1,7 +1,7 @@
 #!/bin/bash
 # Loads the real popup.html + llm.js + popup.js in headless Chrome with a fake
 # chrome.* API, for several saved-settings scenarios, and checks the AI Model
-# dropdown and Jev threshold behaviour. Screenshot: out/popup_haiku.png
+# dropdown, Jev note and Hide level slider. Screenshot: out/popup_haiku.png
 D="$(cd "$(dirname "$0")" && pwd)"; W="$(cygpath -m "$D" 2>/dev/null || echo "$D")"
 ROOT="$(cygpath -m "$D/../.." 2>/dev/null || echo "$D/../..")"
 CHROME="${CHROME:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
@@ -9,10 +9,10 @@ mkdir -p "$D/out"
 status=0
 for sc in haiku xengine xengine-llm jev; do
   case $sc in
-    haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{"aiSpendTotals":{"since":1790800000000,"models":{"claude-haiku-4-5":{"cost":0.31,"calls":42,"tweetCost":0.31,"tweets":610},"jev-latest":{"cost":0.0021,"calls":30,"tweetCost":0.0021,"tweets":700}}}}}' ;;
+    haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{"blockList":[{"text":"mild snark","level":8,"source":"ai_continuous","severity":2},{"text":"partisan dunk","level":8,"source":"jev","severity":6},{"text":"typed by hand","level":8,"source":"manual"}],"aiSpendTotals":{"since":1790800000000,"models":{"claude-haiku-4-5":{"cost":0.31,"calls":42,"tweetCost":0.31,"tweets":610},"jev-latest":{"cost":0.0021,"calls":30,"tweetCost":0.0021,"tweets":700}}}}}' ;;
     xengine) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5","xEngine":"jev"},"local":{}}' ;;
     xengine-llm) seed='{"sync":{"selectedAiModel":"claude-sonnet-4-6","xEngine":"llm"},"local":{}}' ;;
-    jev) seed='{"sync":{"selectedAiModel":"jev-latest","jevThreshold":0.8},"local":{}}' ;;
+    jev) seed='{"sync":{"selectedAiModel":"jev-latest","hideThreshold":9},"local":{}}' ;;
   esac
   node -e '
     const fs=require("fs"); const [root, out, seed, sc, dir]=process.argv.slice(1);

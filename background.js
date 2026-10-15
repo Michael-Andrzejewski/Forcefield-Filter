@@ -654,7 +654,9 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
                 // the original content and styles and pins it as revealed.
                 const note = document.createElement('div');
                 note.dataset.forcefieldNote = '1';
-                note.textContent = 'Blocked by Forcefield - click to reveal';
+                // The rating shows which Hide level would let this post through.
+                const severity = elementToHide.dataset.forcefieldSeverity;
+                note.textContent = 'Blocked by Forcefield' + (severity ? ` (severity ${severity})` : '') + ' - click to reveal';
                 note.style.cssText = 'display: block !important; flex: 1 1 auto !important; width: 100% !important; box-sizing: border-box !important; color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; line-height: 16px !important; text-align: center !important; padding: 10px !important; user-select: none;';
                 elementToHide.appendChild(note);
                 elementToHide.style.cursor = 'pointer';
@@ -795,6 +797,8 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
 
                 for (const target of targets) {
                     if (isAllowedPost(target)) continue; // user said "Bad block" on this post
+                    if (typeof matchedBlockItem.severity === 'number') target.dataset.forcefieldSeverity = String(matchedBlockItem.severity);
+                    else delete target.dataset.forcefieldSeverity;
                     applyTreatment(target);
                 }
             } else if (elementToHide === document.body || elementToHide === document.documentElement) {
@@ -821,10 +825,15 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
     const { allowedPosts, twitterActivity } = await chrome.storage.local.get(['allowedPosts', 'twitterActivity']);
     const allowedKeys = (allowedPosts || []).flatMap(p => p.keys || [])
         .concat(((twitterActivity && twitterActivity.badBlock) || []).filter(e => e.url).map(e => 'url:' + e.url.split(/[?#]/)[0]));
+    // Hide level: rated entries below it are left out, so their posts show.
+    // The page script un-boxes everything first, so raising the level brings
+    // posts back on the next run.
+    const { hideThreshold } = await chrome.storage.sync.get(['hideThreshold']);
+    const toHide = entriesToHide(blockList, hideThresholdFrom(hideThreshold));
     chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: actualContentBlockingFunction,
-            args: [blockList || [], debugMode, whiteboxMode, allowedKeys]
+            args: [toHide, debugMode, whiteboxMode, allowedKeys]
         }).catch(err => {
             if (err.message.includes("No tab with id") || 
                 err.message.includes("Cannot access") ||
@@ -1068,6 +1077,21 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     if (isScanning && activeScanTabId) {
         console.log(`[Forcefield BG] API key changed; rescanning tab ${activeScanTabId}.`);
         startObserverInTab(activeScanTabId);
+    }
+});
+
+// The Hide level slider moved: re-apply the blocklist on every open page of an
+// allowed site, so posts at or above the new level get boxed and posts below
+// it come back, without waiting for the next scroll.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area !== 'sync' || !changes.hideThreshold) return;
+    const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
+    if (!blockList || blockList.length === 0) return;
+    let tabs = [];
+    try { tabs = await chrome.tabs.query({}); } catch (e) { return; }
+    for (const tab of tabs) {
+        if (!tab.id || !/^https?:/.test(tab.url || '') || !(await isSiteAllowed(tab.url))) continue;
+        triggerPageBlock(tab.id, blockList, debugMode || false, whiteboxMode !== false);
     }
 });
 
@@ -1753,25 +1777,27 @@ const pendingScanText = {};
 const pendingScanTweets = {};
 
 
-// Per-tweet path for X when the user picked Jev as the X engine: score each
-// tweet, hide whole tweets at or above the threshold.
+// Per-tweet path for X when the user picked Jev as the X engine: rate each
+// tweet 0-10 and keep every tweet rated 1 or more on the blocklist with its
+// rating. The page hides the ones at or above the Hide level.
 async function scanTweetsWithJev(tweets, tabId, allConfig) {
-    const threshold = typeof allConfig.jevThreshold === 'number' ? allConfig.jevThreshold : JEV_DEFAULT_THRESHOLD;
-    logToPageConsole(tabId, `[Forcefield AI] Scoring ${tweets.length} tweet(s) via Jev (hide at >= ${threshold})…`);
+    const threshold = hideThresholdFrom(allConfig.hideThreshold);
+    logToPageConsole(tabId, `[Forcefield AI] Rating ${tweets.length} tweet(s) via Jev (hide level ${threshold})…`);
     const results = await classifyTweetsWithJev({
         tweets: tweets,
         systemPrompt: allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT,
         tasteContext: await getTasteContext(),
-        typesafeApiKey: allConfig.typesafeApiKey,
-        threshold: threshold
+        typesafeApiKey: allConfig.typesafeApiKey
     });
-    const hidden = results.filter(r => r.hide);
-    logToPageConsole(tabId, `[Forcefield AI] Jev scored ${results.length} tweet(s); hiding ${hidden.length}.`,
-        results.map(r => `${r.score === null ? '  ?' : r.score.toFixed(2)} ${r.hide ? 'HIDE' : 'keep'}  ${(r.tweet.handle || '')} ${String(r.tweet.text).replace(/\s+/g, ' ').slice(0, 90)}`));
-    if (hidden.length > 0) {
+    const flagged = results.filter(r => r.severity !== null && r.severity >= 1);
+    const hiddenNow = flagged.filter(r => r.severity >= threshold).length;
+    logToPageConsole(tabId, `[Forcefield AI] Jev rated ${results.length} tweet(s); ${flagged.length} flagged, ${hiddenNow} at or above hide level ${threshold}.`,
+        results.map(r => `${r.severity === null ? ' ?' : String(r.severity).padStart(2)} ${r.severity !== null && r.severity >= 1 && r.severity >= threshold ? 'HIDE' : 'keep'}  ${(r.tweet.handle || '')} ${String(r.tweet.text).replace(/\s+/g, ' ').slice(0, 90)}`));
+    if (flagged.length > 0) {
         // The whole tweet text is the block phrase: the blocker finds the
         // tweet's text element and boxes the post around it.
-        await addSuggestionsToBlocklist(hidden.map(r => String(r.tweet.text).slice(0, 300)), tabId, allConfig.whiteboxMode, allConfig.debugMode, 'jev');
+        await addSuggestionsToBlocklist(flagged.map(r => ({ text: String(r.tweet.text).slice(0, 300), severity: r.severity })),
+            tabId, allConfig.whiteboxMode, allConfig.debugMode, 'jev');
     }
 }
 
@@ -1780,7 +1806,7 @@ async function handleNewContent(text, tabId, tweets) {
     console.log(`${logPrefix} Received new content. Length: ${text.length}`);
 
     try {
-        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey', 'jevThreshold']);
+        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey', 'hideThreshold']);
         const localData = await chrome.storage.local.get(['whiteboxMode', 'debugMode']);
         const allConfig = { ...syncData, ...localData };
 
@@ -1809,9 +1835,11 @@ async function handleNewContent(text, tabId, tweets) {
         const userPrompt = `${userPromptPrefix}${text}${DEFAULT_USER_PROMPT_SUFFIX}`;
 
         // Personalize every scan with the taste profile: aggregate summary
-        // plus the 5 freshest liked and 5 freshest disliked posts.
+        // plus the 5 freshest liked and 5 freshest disliked posts. The 1-10
+        // rating rules sit between the two, so custom prompts are rated too
+        // and the cached prefix stays stable.
         const tasteContext = await getTasteContext();
-        const fullSystemPrompt = tasteContext ? `${systemPrompt}\n\n${tasteContext}` : systemPrompt;
+        const fullSystemPrompt = [systemPrompt, SEVERITY_INSTRUCTIONS, tasteContext].filter(Boolean).join('\n\n');
 
         console.log(`${logPrefix} Sending request to AI via ${provider} (${aiModel})...`);
         // Surface the scan in the *page* console too, so behaviour is visible
@@ -1831,10 +1859,12 @@ async function handleNewContent(text, tabId, tweets) {
             cacheSystem: true,
             tweets: Array.isArray(tweets) ? tweets.length : 0 // for the per-100-tweets cost comparison
         });
-        const suggestions = extractNegativeTags(aiResponseContent);
+        const suggestions = extractRatedNegativeTags(aiResponseContent);
 
         console.log(`${logPrefix} Received ${suggestions.length} suggestions from AI.`);
-        logToPageConsole(tabId, `[Forcefield AI] Flagged ${suggestions.length} statement(s).`, suggestions);
+        const threshold = hideThresholdFrom(allConfig.hideThreshold);
+        logToPageConsole(tabId, `[Forcefield AI] Flagged ${suggestions.length} statement(s); ${entriesToHide(suggestions, threshold).length} at or above hide level ${threshold}.`,
+            suggestions.map(s => `${s.severity === null ? ' ?' : String(s.severity).padStart(2)}  ${s.text}`));
 
         if (suggestions.length > 0) {
             await addSuggestionsToBlocklist(suggestions, tabId, allConfig.whiteboxMode, allConfig.debugMode);
@@ -1856,6 +1886,10 @@ async function handleNewContent(text, tabId, tweets) {
 }
 
 
+// suggestions: strings, or { text, severity } with severity 1-10 or null.
+// A fresh rating replaces the old one on an entry the AI made earlier
+// (which also rates entries flagged before 2.10.0); hand-made entries stay
+// unrated, so they stay hidden at every level.
 async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debugMode, source = 'ai_continuous') {
     const tab = await chrome.tabs.get(tabId);
     const defaultLevel = getDefaultLevelForSite(tab.url);
@@ -1863,17 +1897,26 @@ async function addSuggestionsToBlocklist(suggestions, tabId, whiteboxMode, debug
     const { blockList } = await chrome.storage.local.get(['blockList']);
     let currentBlockList = blockList || [];
     let newSuggestions = [];
+    let reRated = 0;
 
-    suggestions.forEach(word => {
-        const trimmedWord = word.trim();
-        if (trimmedWord && !currentBlockList.some(item => item.text.toLowerCase() === trimmedWord.toLowerCase())) {
-            currentBlockList.push({ text: trimmedWord, level: defaultLevel, source: source });
+    suggestions.forEach(s => {
+        const trimmedWord = String(typeof s === 'string' ? s : (s && s.text) || '').trim();
+        const severity = s && typeof s.severity === 'number' ? s.severity : null;
+        if (!trimmedWord) return;
+        const existing = currentBlockList.find(item => item.text.toLowerCase() === trimmedWord.toLowerCase());
+        if (!existing) {
+            const entry = { text: trimmedWord, level: defaultLevel, source: source };
+            if (severity !== null) entry.severity = severity;
+            currentBlockList.push(entry);
             newSuggestions.push(trimmedWord);
+        } else if (severity !== null && (existing.source === 'ai_continuous' || existing.source === 'jev') && existing.severity !== severity) {
+            existing.severity = severity;
+            reRated++;
         }
     });
 
-    if (newSuggestions.length > 0) {
-        console.log(`[Forcefield BG] Adding ${newSuggestions.length} new AI suggestions to the blocklist.`);
+    if (newSuggestions.length > 0 || reRated > 0) {
+        console.log(`[Forcefield BG] Adding ${newSuggestions.length} new AI suggestions to the blocklist (${reRated} re-rated).`);
         await chrome.storage.local.set({ blockList: currentBlockList });
         
         chrome.runtime.sendMessage({ command: "blockListUpdated", newSuggestions: newSuggestions })

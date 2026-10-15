@@ -24,14 +24,14 @@ function sandbox({ spendLog = [], limits } = {}) {
     };
     vm.createContext(box);
     vm.runInContext(fs.readFileSync(path.join(root, 'llm.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'jev.js'), 'utf8') +
-        '\n;globalThis.__j = { classifyTweetsWithJev, buildJevRequest, jevFilterRules, JEV_DEFAULT_THRESHOLD, DEFAULT_SYSTEM_PROMPT };', box);
+        '\n;globalThis.__j = { classifyTweetsWithJev, buildJevRequest, jevFilterRules, jevSeverity, JEV_SCORE_LEVELS, DEFAULT_SYSTEM_PROMPT };', box);
     return { j: box.__j, fetchCalls, local, setReply: f => { reply = f; } };
 }
 const ok = body => ({ ok: true, json: async () => body, text: async () => JSON.stringify(body) });
-// Answers t0..tN with the given scores, usage proportional to size.
+// Answers t0..tN with the given score levels (0-5), fixed usage.
 const answering = scores => req => ok({
     model: 'jev-1.13.0',
-    answers: Object.fromEntries(Object.keys(req.questions).map((k, i) => [k, { type: 'noul', noul: scores[i % scores.length] }])),
+    answers: Object.fromEntries(Object.keys(req.questions).map((k, i) => [k, { type: 'score', score: scores[i % scores.length] }])),
     usage: { input_tokens: 1000, output_tokens: 20 }
 });
 
@@ -51,7 +51,7 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
     // 1. Request shape.
     {
         const { j, fetchCalls, setReply } = sandbox();
-        setReply(answering([0.9, 0.1, 0.5]));
+        setReply(answering([5, 0, 2.5]));
         const res = await j.classifyTweetsWithJev({ tweets: tweets(3), systemPrompt: MY_PROMPT, tasteContext: 'TASTE BLOCK', typesafeApiKey: 'test-key-not-real' });
         const c = fetchCalls[0];
         check(fetchCalls.length === 1, 'one request for 3 tweets');
@@ -64,10 +64,12 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
         check(!/<Negative>|Do NOT add explanations|Do NOT tag entire paragraphs/.test(rules), 'filter rules drop text-model output instructions', rules);
         check(Object.keys(c.body.questions).join(',') === 't0,t1,t2', 'one question per tweet, keys t0..t2');
         const q = c.body.questions.t1;
-        check(q.type === 'noul' && q.instructions.tweet.text === 'tweet number 1 says something' && q.instructions.tweet.author === '@user1', 'tweet travels inside its own question');
-        check(q.criteria && q.criteria.true && q.criteria.false, 'true/false criteria present');
-        check(res.map(r => r.score).join(',') === '0.9,0.1,0.5', 'scores map back in order', JSON.stringify(res.map(r => r.score)));
-        check(res.map(r => r.hide).join(',') === 'true,false,true', 'default threshold 0.5 is inclusive');
+        check(q.type === 'score' && q.instructions.tweet.text === 'tweet number 1 says something' && q.instructions.tweet.author === '@user1', 'tweet travels inside its own score question');
+        check(Array.isArray(q.criteria) && q.criteria.length === 6, 'six levels: nothing to hide, then the five severity bands', JSON.stringify(q.criteria));
+        check(/^Nothing this user would mind/.test(q.criteria[0]) && /^Mildly unwanted/.test(q.criteria[1]) && /^Genuinely hateful: slurs/.test(q.criteria[5]), 'levels run low to high in the shared band wording', JSON.stringify(q.criteria));
+        check(res.map(r => r.score).join(',') === '5,0,2.5', 'raw scores map back in order', JSON.stringify(res.map(r => r.score)));
+        check(res.map(r => r.severity).join(',') === '10,0,5', 'scores become severity 0-10', JSON.stringify(res.map(r => r.severity)));
+        check(!('hide' in res[0]), 'no hide decision here: the Hide level is applied on the page');
     }
     // 2. Default prompt: worked example stripped.
     {
@@ -75,18 +77,21 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
         const rules = j.jevFilterRules(j.DEFAULT_SYSTEM_PROMPT);
         check(rules.includes('Politically aggressive') && !rules.includes('Example Input Text') && !rules.includes('Daily Outrage'), 'default prompt: criteria kept, example removed');
     }
-    // 3. Threshold and missing answers.
+    // 3. Score -> severity mapping, and missing answers.
     {
         const { j, setReply } = sandbox();
-        setReply(req => ok({ answers: { t0: { type: 'noul', noul: 0.72 } }, usage: { input_tokens: 10 } }));
-        const res = await j.classifyTweetsWithJev({ tweets: tweets(2), systemPrompt: MY_PROMPT, typesafeApiKey: 'k', threshold: 0.8 });
-        check(res[0].score === 0.72 && res[0].hide === false, 'custom threshold 0.8 keeps a 0.72');
-        check(res[1].score === null && res[1].hide === false, 'missing answer is never hidden');
+        const levels = [0, 0.24, 0.25, 1, 1.5, 2, 3, 4, 4.8, 5];
+        check(levels.map(j.jevSeverity).join(',') === '0,0,1,2,3,4,6,8,10,10', 'each band level lands on the top of its band; in-between scores interpolate', levels.map(j.jevSeverity).join(','));
+        check(j.jevSeverity(undefined) === null && j.jevSeverity(NaN) === null, 'no score -> null');
+        setReply(req => ok({ answers: { t0: { type: 'score', score: 3.6 } }, usage: { input_tokens: 10 } }));
+        const res = await j.classifyTweetsWithJev({ tweets: tweets(2), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' });
+        check(res[0].score === 3.6 && res[0].severity === 7, 'a 3.6 is severity 7', JSON.stringify(res[0]));
+        check(res[1].score === null && res[1].severity === null, 'missing answer gets no rating, so it is never stored or hidden');
     }
     // 4. Batching: 60 tweets -> 25 + 25 + 10.
     {
         const { j, fetchCalls, setReply } = sandbox();
-        setReply(answering([0.6]));
+        setReply(answering([3]));
         const res = await j.classifyTweetsWithJev({ tweets: tweets(60), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' });
         check(fetchCalls.map(c => Object.keys(c.body.questions).length).join(',') === '25,25,10', 'chunks of 25 tweets', fetchCalls.map(c => Object.keys(c.body.questions).length).join(','));
         check(res.length === 60 && res[59].tweet.handle === '@user59', 'all 60 results in order');
@@ -105,13 +110,13 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
     // 6. Spend: recorded at Jev pricing; budget blocks calls.
     {
         const s = sandbox();
-        s.setReply(answering([0.1]));
+        s.setReply(answering([0.5]));
         await s.j.classifyTweetsWithJev({ tweets: tweets(1), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' });
         await new Promise(r => setTimeout(r, 10));
         const last = s.local.aiSpendLog[s.local.aiSpendLog.length - 1];
         check(last && Math.abs(last.cost - 1000 * 0.042 / 1e6) < 1e-12, 'spend = 1000 input tokens x $0.042/M, output free', last && last.cost);
         const b = sandbox({ spendLog: [{ ts: Date.now(), cost: 5 }] });
-        b.setReply(answering([0.1]));
+        b.setReply(answering([0.5]));
         let err = null;
         try { await b.j.classifyTweetsWithJev({ tweets: tweets(1), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' }); } catch (e) { err = e; }
         check(err && /budget/i.test(err.message) && b.fetchCalls.length === 0, 'spend limit reached -> no request sent', err && err.message);
@@ -119,7 +124,7 @@ const tweets = n => Array.from({ length: n }, (_, i) => ({ text: `tweet number $
     // 7. Per-model cost tracking: entries tagged, running totals, comparison text.
     {
         const s = sandbox();
-        s.setReply(answering([0.1]));
+        s.setReply(answering([0.5]));
         await s.j.classifyTweetsWithJev({ tweets: tweets(30), systemPrompt: MY_PROMPT, typesafeApiKey: 'k' }); // 25 + 5
         await new Promise(r => setTimeout(r, 20));
         const log = s.local.aiSpendLog;

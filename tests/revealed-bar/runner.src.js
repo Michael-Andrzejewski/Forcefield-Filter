@@ -232,6 +232,25 @@ async function cycle(p, level, label) {
     check(window.__pageErrors.length === errsBefore, tag + ' no page errors', window.__pageErrors.slice(errsBefore).join(' | '));
   }
 
+  // The white box names the AI's rating, keeps it through Hide again, and
+  // drops it when the post is next matched by an unrated entry.
+  {
+    const note = p => { const b = boxed(p); const n = b && b.querySelector('[data-forcefield-note]'); return n ? n.textContent : null; };
+    reset();
+    scan([{ text: PHRASES[1], level: 5, severity: 7 }, { text: PHRASES[2], level: 5 }]);
+    check(note(1) === 'Blocked by Forcefield (severity 7) - click to reveal', '[severity] rated post shows its rating', note(1));
+    check(note(2) === 'Blocked by Forcefield - click to reveal', '[severity] unrated post shows the plain note', note(2));
+    click(boxed(1) && (boxed(1).firstElementChild || boxed(1)));
+    click(link(art(1), 'Hide again'));
+    check(note(1) === 'Blocked by Forcefield (severity 7) - click to reveal', '[severity] Hide again keeps the rating', note(1));
+    reset();
+    scan([{ text: PHRASES[1], level: 5, severity: 4 }]);
+    scan([{ text: PHRASES[1], level: 5 }]);
+    check(note(1) === 'Blocked by Forcefield - click to reveal', '[severity] stale rating dropped on an unrated match', note(1));
+    scan([]);
+    check(!boxed(1), '[severity] empty list (everything below the Hide level) un-boxes the post');
+  }
+
   // Extension reloaded while a post is revealed: verdict links must not
   // throw or write anything (the storage API is gone).
   reset();

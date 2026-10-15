@@ -15,8 +15,8 @@ If tools like this were widely used, clickbait and ragebait would stop paying.
 
 1. A content script watches the page for new text (on X/Twitter it extracts only tweet bodies and dedupes them, so you aren't billed twice for the same post).
 2. New text is batched and sent to a small, cheap model (Claude Haiku by default) with a filtering prompt.
-3. The model returns the specific statements that match your filter. Those phrases go on a local blocklist.
-4. Matching posts are hidden, replaced with a "Blocked by Forcefield - click to reveal" box, or highlighted, depending on the mode you pick. Blocking also propagates down reply threads.
+3. The model returns the specific statements that match your filter, each rated 1 to 10 for how much you'd want it hidden. Those phrases go on a local blocklist with their rating.
+4. Matching posts rated at or above your **Hide Level** are hidden, replaced with a "Blocked by Forcefield (severity N) - click to reveal" box, or highlighted, depending on the mode you pick. Blocking also propagates down reply threads.
 
 Everything runs locally in your browser except the LLM call itself, which goes directly from your browser to the provider you configure.
 
@@ -42,6 +42,24 @@ Optional tuning, all in Developer mode:
 - **Debug Settings** switch between replacing blocked posts with a click-to-reveal white box (the default), hiding them outright, or just highlighting matches in red.
 - **Blocked Tags** shows the current blocklist. Each entry has a level number, which is how many parent elements get hidden along with the matched text. The AI button on an entry tells the model it made a mistake, so it refines its own prompt and unblocks that text.
 
+## Hide level
+
+Every flagged post gets a rating from 1 to 10, on five bands:
+
+| Rating | Band | Examples |
+|---|---|---|
+| 1-2 | Mildly unwanted | low-effort, filler, off-topic for you, mildly negative or snarky, borderline |
+| 3-4 | Clearly unwanted | engagement bait, vague-posting, empty hype, complaining, dunking, your taste profile's dislikes |
+| 5-6 | Negative or divisive | ragebait, outrage, partisan or culture-war point-scoring, doom, aggressive takes |
+| 7-8 | Hostile | insults, contempt or mockery aimed at people or groups, harassment, pile-ons |
+| 9-10 | Genuinely hateful | slurs, dehumanizing a group, threats, cheering or calling for violence |
+
+The **Hide Level** slider in the popup (right under the scan button, and under Scanning Controls in Developer mode) hides posts rated at or above it. Set it to 1 or 2 on days you want to see almost nothing annoying, or to 9 on days you're fine with nearly everything that isn't genuinely hateful. The default is 3.
+
+Every rated post stays on the blocklist whatever the level, so moving the slider takes effect at once on open pages, in both directions, with no rescan and no extra cost. The white box shows each post's rating, so you can see which level would let it through.
+
+Claude and Gemini rate inside their reply (`<Negative severity="6">...</Negative>`). Jev by TypeSafe rates each tweet with a six-level score question (nothing to hide, then the five bands), mapped onto the same 0-10 scale. Phrases you add or select yourself have no rating and are hidden at every level, and so are posts flagged before version 2.10.0, until the AI flags them again.
+
 ## Cost
 
 Scanning sends text to a paid API, so browsing costs real money (roughly cents per session with Haiku on tweet-only mode). Forcefield ships with a budget guard: spending is tracked from each response's token usage, and calls pause automatically at $1/hour or $2/day by default. Both limits are adjustable under **AI Budget** in Developer mode.
@@ -58,7 +76,7 @@ You can view, copy, or clear the underlying activity log in the popup too. Only 
 
 ## What the AI sees
 
-Each blocking scan is one request with two parts. The system message is your system prompt with the taste profile appended. The user message wraps the new feed text in the content instructions. In brackets, which popup field (or source) each piece comes from:
+Each blocking scan is one request with two parts. The system message is your system prompt, then the 1-10 rating rules, then the taste profile. The user message wraps the new feed text in the content instructions. In brackets, which popup field (or source) each piece comes from:
 
 ```
 ━━━━━━━━━━━━━━━━ SYSTEM MESSAGE ━━━━━━━━━━━━━━━━
@@ -68,6 +86,13 @@ Your task is to identify:
 - (the kinds of statements you want blocked)
 ...
 For each identified statement, wrap it precisely with <Negative> tags. ...
+
+[rating rules: fixed, added to every scan so custom prompts are rated too]
+Rate every tag from 1 to 10 for how much this user would want it hidden. ...
+1-2 Mildly unwanted: ...
+(one line per band, up to 9-10 Genuinely hateful)
+Write the rating as an attribute: <Negative severity="6">exact text</Negative>.
+The user chooses a level each day and only tags at or above it are hidden, so tag everything they might not want to see, including mild cases, ...
 
 [taste profile: the "Taste Profile" field, plus your recent activity]
 This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes.
@@ -109,7 +134,7 @@ Notes:
 
 - The taste block is left out entirely until a profile or some logged activity exists, and each list of 5 recent posts appears only once you have activity of that kind.
 - On X/Twitter the feed content is tweet body text only: no names, handles, or like counts, with a blank line between tweets. On other sites it is the visible page text.
-- The model's reply is just the `<Negative>...</Negative>` statements. Those go on the local blocklist.
+- The model's reply is just the `<Negative severity="N">...</Negative>` statements. Those go on the local blocklist with their rating, and the Hide Level decides which ones are hidden.
 
 ## Autonomous curation (experimental, use with care)
 
@@ -131,9 +156,9 @@ The page-filtering side of Forcefield (the ad-blocker-style hiding above) does n
 
 ## Known issues
 
-- Blocks too much content at times. The default prompt is aggressive on purpose; soften it in the popup if it's catching things you want.
+- Blocks too much content at times. The default prompt is aggressive on purpose; raise the Hide Level, or soften the prompt, if it's catching things you want.
 - Text only. Images and videos slip through unless the model flags the caption.
-- The blocklist grows over a long session. Use **Clear All** in Developer mode if matching starts to feel slow.
+- The blocklist grows over a long session, a bit faster since 2.10.0 because mildly unwanted posts are kept too. Use **Clear All** in Developer mode if matching starts to feel slow.
 - X's DOM changes regularly. Selectors are written defensively (geometry checks instead of class names where possible), but a redesign can still break blocking until selectors are updated.
 
 ## Roadmap

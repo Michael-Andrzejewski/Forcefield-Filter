@@ -38,6 +38,50 @@ function usesJevOnX(syncSettings) {
     return s.selectedAiModel === JEV_MODEL_ID || s.xEngine === 'jev';
 }
 
+// --- Severity: how much the user would want a flagged post hidden, 1-10 ---
+// Both engines rate on these five bands (text models in the tag, Jev as a
+// score question). Every rated entry is kept on the blocklist with its number;
+// the popup's Hide level slider (sync `hideThreshold`) decides which ones the
+// page hides, so moving it takes effect at once, without a rescan. Entries
+// with no rating (typed or selected by hand, or flagged before 2.10.0) are
+// hidden at every level.
+const SEVERITY_BANDS = [
+    { low: 1, high: 2, label: 'Mildly unwanted', text: 'low-effort, filler, off-topic for this user, mildly negative or snarky, or borderline' },
+    { low: 3, high: 4, label: 'Clearly unwanted', text: 'engagement bait, vague-posting, empty hype, complaining, dunking, or a clear match for the dislikes in the taste profile' },
+    { low: 5, high: 6, label: 'Negative or divisive', text: 'ragebait, outrage, partisan or culture-war point-scoring, doom, aggressive takes' },
+    { low: 7, high: 8, label: 'Hostile', text: 'insults, contempt or mockery aimed at people or groups, harassment, pile-ons' },
+    { low: 9, high: 10, label: 'Genuinely hateful', text: 'slurs, dehumanizing a group, threats, or cheering or calling for violence' }
+];
+const DEFAULT_HIDE_THRESHOLD = 3;
+
+function severityBand(n) {
+    return SEVERITY_BANDS.find(b => n <= b.high) || SEVERITY_BANDS[SEVERITY_BANDS.length - 1];
+}
+// A stored or typed hide level -> an integer 1-10 (default when unset or junk).
+function hideThresholdFrom(value) {
+    const n = Math.round(Number(value));
+    if (value === undefined || value === null || value === '' || !isFinite(n)) return DEFAULT_HIDE_THRESHOLD;
+    return Math.min(10, Math.max(1, n));
+}
+// The blocklist entries the page should hide at this level.
+function entriesToHide(blockList, threshold) {
+    return (blockList || []).filter(item => typeof item.severity !== 'number' || item.severity >= threshold);
+}
+// One line for the popup under the slider.
+function describeHideThreshold(n) {
+    if (n <= 1) return 'Hides everything flagged, even mildly unwanted posts.';
+    const band = severityBand(n);
+    const what = n >= 9 ? 'genuinely hateful only' : `${band.label.toLowerCase()} and worse`;
+    return `Hides ${n === 10 ? '10' : n + '-10'}: ${what}. Shows ${n === 2 ? '1' : '1-' + (n - 1)}.`;
+}
+
+// Appended to the system prompt on every blocking scan, after the user's own
+// rules, so a custom prompt gets ratings too.
+const SEVERITY_INSTRUCTIONS = `Rate every tag from 1 to 10 for how much this user would want it hidden. Use the highest band that fits; within a band, the higher number means stronger or more certain.
+${SEVERITY_BANDS.map(b => `${b.low}-${b.high} ${b.label}: ${b.text}.`).join('\n')}
+Write the rating as an attribute: <Negative severity="6">exact text</Negative>.
+The user chooses a level each day and only tags at or above it are hidden, so tag everything they might not want to see, including mild cases, and let the rating carry the difference. Still never tag neutral descriptions, news headlines, interface text, or anything matching the likes in the taste profile.`;
+
 // --- Cost guard ---------------------------------------------------------
 // USD per million tokens (July 2026; Haiku 5.5 added October 2026). Haiku 5.5
 // is $0.10/$0.50 for prompts up to 100K tokens; scans are far below that. Cache reads bill ~0.1x input, cache
@@ -257,19 +301,25 @@ async function callGemini({ model, system, userText, maxTokens, geminiApiKey }) 
     };
 }
 
-// Parse <Negative>...</Negative> tags out of a model response. Shared by the
-// service worker and the popup (both used to carry identical copies).
-function extractNegativeTags(text) {
-    const regex = /<Negative>(.*?)<\/Negative>/gs;
+// Parse <Negative severity="N">...</Negative> tags out of a model response
+// into [{ text, severity }]; severity is null when the tag has no usable
+// rating. Shared by the service worker and the popup.
+function extractRatedNegativeTags(text) {
+    const regex = /<Negative\b([^>]*)>(.*?)<\/Negative>/gs;
     const matches = [];
     let match;
-    while ((match = regex.exec(text)) !== null) {
-        const suggestion = match[1].trim();
-        if (suggestion) {
-            matches.push(suggestion);
-        }
+    while ((match = regex.exec(String(text || ''))) !== null) {
+        const suggestion = match[2].trim();
+        if (!suggestion) continue;
+        const rating = /severity\s*=\s*["']?(\d+(?:\.\d+)?)/i.exec(match[1]);
+        const n = rating ? Math.round(parseFloat(rating[1])) : NaN;
+        matches.push({ text: suggestion, severity: isFinite(n) ? Math.min(10, Math.max(1, n)) : null });
     }
     return matches;
+}
+// Just the tagged texts.
+function extractNegativeTags(text) {
+    return extractRatedNegativeTags(text).map(t => t.text);
 }
 
 // Belt-and-suspenders export (top-level declarations are already visible to
@@ -277,7 +327,8 @@ function extractNegativeTags(text) {
 self.ForcefieldLLM = {
     AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
     JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX, formatSpendByModel,
-    extractNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING
+    extractNegativeTags, extractRatedNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING,
+    SEVERITY_BANDS, DEFAULT_HIDE_THRESHOLD, SEVERITY_INSTRUCTIONS, severityBand, hideThresholdFrom, entriesToHide, describeHideThreshold
 };
 
 // --- Default prompts (single source of truth for the service worker and the popup) ---
@@ -297,7 +348,7 @@ A taste profile for this specific user follows these instructions, built from po
 For each identified statement, wrap it precisely with <Negative> tags. Only include the exact text you want tagged.
 Do NOT add explanations, apologies, or any text outside the <Negative> tags.
 Do NOT tag entire paragraphs; the blocking tool only works on single sentences without paragraph breaks or quotation marks.
-Be selective and only tag genuinely negative/controversial content, not neutral descriptions or news headlines.
+Only tag content this user might not want to see, never neutral descriptions or news headlines.
 
 The example below is illustrative and uses invented accounts and posts.
 
@@ -305,10 +356,10 @@ Example Input Text:
 To view keyboard shortcuts, press question mark\nView keyboard shortcuts\nFor you\nFollowing\nSee new posts\nWhat's happening?\n\n\nPost\nYour Home Timeline\nCompiler Notes\n@compiler_notes\n·\n1h\nSpent the afternoon reading the allocator source instead of guessing at the profiler output. Turns out the slow path was a fallback we added years ago and never revisited.\n12\n9\n75\n1.3K\nQuiet Mornings\n@quiet_mornings_\n·\n16h\nThere is an old story where a student asks the teacher where all the heroes went, and the teacher answers that the student is the one they have been waiting for.\nQuote\nJournal Digest\n@journal_digest\n·\n4h\nA paper in a materials science journal describes a partial fossil skeleton recovered from a mid-Jurassic formation, representing a taxon not previously described. https://example.com/paper\n3\n12\n5.2K\nDaily Outrage\n@daily_outrage_\n·\n27m\nAbsolutely disgusting that nobody in this industry has the spine to say what everyone privately admits, and the people defending it are either liars or fools.\n127\n264\n1.2K\n409K\nSignal Boost\n@signalboost_x\n·\n55m\nAn anonymous source says a major executive tells the public everything is fine but privately expects something catastrophic.\n52\n181\n4.2K\n142K\nBenchmarks Weekly\n@benchmarks_wk\n·\n34m\nIntroducing a small, scalable benchmark for evaluating planning, constraint adherence, and long-context reasoning.\nShow more\n7\n13\n86\n3.8K\nvague poster\n@vague_poster\n·\n\n16\n45\n918\n28K\nTake Factory\n@take_factory\n·\nMay 29\ncan you upset an entire fandom with one sentence\n57\n22\n676\n32K
 
 Example Correct Output:
-<Negative>Absolutely disgusting that nobody in this industry has the spine to say what everyone privately admits</Negative>
-<Negative>the people defending it are either liars or fools</Negative>
-<Negative>An anonymous source says a major executive tells the public everything is fine but privately expects something catastrophic</Negative>
-<Negative>can you upset an entire fandom with one sentence</Negative>`;
+<Negative severity="5">Absolutely disgusting that nobody in this industry has the spine to say what everyone privately admits</Negative>
+<Negative severity="7">the people defending it are either liars or fools</Negative>
+<Negative severity="4">An anonymous source says a major executive tells the public everything is fine but privately expects something catastrophic</Negative>
+<Negative severity="3">can you upset an entire fandom with one sentence</Negative>`;
 
 const DEFAULT_USER_PROMPT_PREFIX = `Analyze the following text content and extract controversial, politically aggressive, non-technical, low-effort, non-insightful, or negative statements using <Negative> tags as instructed. Judge each statement against this user's taste profile as well as the general criteria:\n\n----\n`;
 const DEFAULT_USER_PROMPT_SUFFIX = `\n----\n\nRemember to only return the tagged statements, nothing else.`; // Suffix remains constant for now

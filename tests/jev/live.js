@@ -25,7 +25,7 @@ const box = {
 };
 vm.createContext(box);
 vm.runInContext(fs.readFileSync(path.join(root, 'llm.js'), 'utf8') + '\n' + fs.readFileSync(path.join(root, 'jev.js'), 'utf8') +
-    '\n;globalThis.__j = { classifyTweetsWithJev };', box);
+    '\n;globalThis.__j = { classifyTweetsWithJev }; globalThis.DEFAULT_HIDE_THRESHOLD_FOR_TEST = DEFAULT_HIDE_THRESHOLD;', box);
 
 // The user's own rules (Sep 25 backup), minus nothing: jev.js strips the format lines itself.
 const RULES = `Your task is to identify:
@@ -71,13 +71,16 @@ const TWEETS = [
     const raw = JSON.parse(lastRaw.text);
     console.log('response keys:', Object.keys(raw).join(', '), '| model:', raw.model, '| usage:', JSON.stringify(raw.usage));
     console.log('sample answer:', JSON.stringify(raw.answers && raw.answers.t0));
+    // "hide" here means: at or above the default Hide level.
+    const level = box.DEFAULT_HIDE_THRESHOLD_FOR_TEST;
     let agree = 0;
     results.forEach((r, i) => {
         const expected = TWEETS[i][2];
-        const got = r.hide ? 'hide' : 'keep';
+        const got = r.severity !== null && r.severity >= 1 && r.severity >= level ? 'hide' : 'keep';
         if (got === expected) agree++;
-        console.log(`${r.score === null ? '  ?  ' : r.score.toFixed(3)}  ${got.padEnd(4)} (expected ${expected})  ${TWEETS[i][0]}: ${TWEETS[i][1].slice(0, 70)}`);
+        console.log(`${r.score === null ? '  ?  ' : r.score.toFixed(2)} -> severity ${r.severity === null ? '?' : String(r.severity).padStart(2)}  ${got.padEnd(4)} (expected ${expected})  ${TWEETS[i][0]}: ${TWEETS[i][1].slice(0, 70)}`);
     });
+    console.log(`(hide = severity ${level} or more, the default Hide level)`);
     const cost = (raw.usage && raw.usage.input_tokens || 0) * 0.042 / 1e6;
     console.log(`agreement with expected: ${agree}/${TWEETS.length} | cost of this call: $${cost.toFixed(6)}`);
 })();
