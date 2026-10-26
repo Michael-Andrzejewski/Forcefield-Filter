@@ -1,12 +1,14 @@
-// Builds two test pages for good-faith mutes, run in headless Chrome by run.sh:
+// Builds three test pages for good-faith mutes, run in headless Chrome by run.sh:
 //  out/mutes.html  the REAL actualContentBlockingFunction from background.js
 //                  boxing a muted account's posts on X-like markup.
 //  out/authors.html the REAL continuousScan.js reporting each tweet's author,
 //                  including a quoted post inside another account's post.
-// Usage: node page.build.js path/to/background.js path/to/continuousScan.js
+//  out/menu.html   the REAL twitterTracker.js adding Temporary mute to a
+//                  fake X "⋯" menu.
+// Usage: node page.build.js path/to/background.js path/to/continuousScan.js path/to/twitterTracker.js
 const fs = require('fs');
 const path = require('path');
-const [bgPath, csPath] = process.argv.slice(2);
+const [bgPath, csPath, trackerPath] = process.argv.slice(2);
 const bg = fs.readFileSync(bgPath, 'utf8');
 const start = bg.indexOf('function actualContentBlockingFunction');
 let depth = 0, end = -1;
@@ -79,4 +81,35 @@ window.chrome = { runtime: { id: 'fakeextensionid', lastError: undefined,
   document.getElementById('results').textContent = JSON.stringify(results);
 })();
 </script></body></html>`);
+// A stand-in for X's "⋯" menu: opens 40 ms after a caret (or profile ⋯)
+// click, closes on Escape, and its own items close it and count the click.
+const menuTweet = `<article data-testid="tweet" data-post="9"><div><div class="row"><div data-testid="Tweet-User-Avatar" style="width:40px;height:40px"></div><div style="flex:1 1 0px">
+<div class="row">${name('Crank', '@crank')}<div data-testid="caret" role="button" style="margin-left:auto">⋯</div></div><div data-testid="tweetText" class="tt">A post with a menu.</div></div></div></div></article>`;
+fs.writeFileSync(path.join(out, 'menu.html'), `<!doctype html><html><head><meta charset="utf-8"><title>menu</title><style>${css}</style></head><body>
+${nav}<div id="timeline">${menuTweet}</div><div data-testid="userActions" role="button">⋯ profile</div><div id="layers"></div><pre id="results"></pre>
+<script>
+window.__sent = []; window.__store = {}; window.__days = 7; window.__menuFor = '@crank'; window.__muteWord = 'Mute';
+window.__xClicked = []; window.__escapes = 0; window.__errors = [];
+window.addEventListener('error', e => __errors.push(String(e.message)));
+window.chrome = { runtime: { id: 'fakeextensionid', lastError: undefined,
+    sendMessage(msg, cb) { __sent.push(msg); setTimeout(() => cb && cb(msg.command === 'tempMuteOffer' ? { offer: msg.handle !== '@me', days: __days } : { muted: true }), 1); } },
+  storage: { local: {
+    get(keys, cb) { const r = {}; keys.forEach(k => { if (k in __store) r[k] = JSON.parse(JSON.stringify(__store[k])); }); setTimeout(() => cb(r), 0); },
+    set(obj, cb) { Object.assign(__store, JSON.parse(JSON.stringify(obj))); cb && setTimeout(cb, 0); } } } };
+const item = (label, id) => '<div role="menuitem" tabindex="0" data-testid="' + id + '" class="row"><div><svg viewBox="0 0 24 24"><g><path d="M0 0h1"></path></g></svg></div><div><div dir="ltr"><span>' + label + '</span></div></div></div>';
+function openMenu() {
+  const h = __menuFor;
+  document.getElementById('layers').innerHTML = '<div role="menu"><div><div data-testid="Dropdown">' +
+    item('Not interested in this post', 'notInterested') + item('Follow ' + h, 'follow') + item(__muteWord + ' ' + h, 'mute') + item('Block ' + h, 'block') + item('Report post', 'report') + '</div></div></div>';
+}
+document.addEventListener('click', e => {
+  if (e.target.closest('[data-testid="caret"], [data-testid="userActions"]')) setTimeout(openMenu, 40);
+  const mi = e.target.closest('[role="menuitem"]');
+  if (mi) { __xClicked.push(mi.textContent); document.getElementById('layers').innerHTML = ''; }
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { __escapes++; document.getElementById('layers').innerHTML = ''; } });
+</script>
+<script>${fs.readFileSync(trackerPath, 'utf8')}</script>
+<script>${fs.readFileSync(path.join(__dirname, 'menu.runner.src.js'), 'utf8')}</script>
+</body></html>`);
 console.log('built');

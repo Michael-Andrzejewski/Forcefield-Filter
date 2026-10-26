@@ -1,7 +1,8 @@
 #!/bin/bash
-# Good-faith mutes: the node suites, then two pages in headless Chrome (own
+# Good-faith mutes: the node suites, then three pages in headless Chrome (own
 # temp profile, never your real one): the real blocker boxing a muted
-# account, and the real continuousScan.js naming each tweet's author.
+# account, the real continuousScan.js naming each tweet's author, and the
+# real twitterTracker.js adding Temporary mute to X's menu.
 # Usage: tests/good-faith/run.sh
 D="$(cd "$(dirname "$0")" && pwd)"; W="$(cygpath -m "$D" 2>/dev/null || echo "$D")"
 CHROME="${CHROME:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
@@ -9,8 +10,8 @@ status=0
 node "$D/ledger.test.js" || status=1
 node "$D/flow.test.js" || status=1
 node "$D/follow.test.js" || status=1
-node "$D/page.build.js" "$D/../../background.js" "$D/../../continuousScan.js" >/dev/null || exit 1
-for p in mutes authors; do
+node "$D/page.build.js" "$D/../../background.js" "$D/../../continuousScan.js" "$D/../../twitterTracker.js" >/dev/null || exit 1
+for p in mutes authors menu; do
   "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$W/out/profile" --allow-file-access-from-files --virtual-time-budget=10000 --window-size=700,1400 --dump-dom "file:///$W/out/$p.html" 2>/dev/null > "$D/out/dom_$p.html"
   node -e '
     const h=require("fs").readFileSync(process.argv[1],"utf8");

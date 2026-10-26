@@ -106,9 +106,10 @@ function renderGoodFaith() {
         if (goodFaithToggle) goodFaithToggle.checked = s.goodFaithMutes !== false;
         chrome.storage.local.get(['badFaithLedger', 'xFollowing'], (r) => {
             if (!list) return;
-            const lines = describeLedger(r.badFaithLedger, r.xFollowing, Date.now());
+            // Switched off: only the temporary mutes picked by hand still apply.
+            const lines = describeLedger(r.badFaithLedger, r.xFollowing, Date.now(), { includeAuto: s.goodFaithMutes !== false });
             list.textContent = lines.length ? lines.join('\n')
-                : 'No account has posted in bad faith yet. Accounts appear here as scans on X find bad-faith posts.';
+                : 'No muted accounts yet. Accounts appear here when scans on X find bad-faith posts, or when you pick Temporary mute in a post\'s ⋯ menu.';
         });
     });
 }

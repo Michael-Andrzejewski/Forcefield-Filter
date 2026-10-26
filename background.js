@@ -952,7 +952,8 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
 }
 
 // --- Good-faith mutes (rules and ladder in goodFaith.js) -------------------
-// Scans add bad-faith posts to the ledger (local `badFaithLedger`), likes
+// Scans add bad-faith posts to the ledger (local `badFaithLedger`), the
+// Temporary mute item in X's post menu adds the user's own mutes, likes
 // logged by twitterTracker.js forgive, and the page boxes muted accounts'
 // posts. Followed accounts (local `xFollowing`) come from xFollowWatch.js;
 // the user's own handle (local `xOwnHandle`) from twitterTracker.js.
@@ -986,15 +987,33 @@ async function recordBadFaith(posts, tabId) {
     logToPageConsole(tabId, `[Forcefield AI] Bad faith from ${[...new Set(posts.map(p => normalizeHandle(p.handle)))].join(', ')}.` + (mutedText ? ` Muted ${mutedText}.` : ''));
 }
 
-// Accounts to box on the page right now: [{ handle, note }].
+// Accounts to box on the page right now: [{ handle, note }]. With the
+// bad-faith switch off, the user's own temporary mutes still apply.
 async function mutedForPage() {
-    if (!(await goodFaithMutesOn())) return [];
+    const includeAuto = await goodFaithMutesOn();
     const { badFaithLedger, xFollowing, xOwnHandle } = await chrome.storage.local.get(['badFaithLedger', 'xFollowing', 'xOwnHandle']);
     const now = Date.now();
     const own = normalizeHandle(xOwnHandle);
-    return activeMutes(badFaithLedger, xFollowing, now)
+    return activeMutes(badFaithLedger, xFollowing, now, { includeAuto })
         .filter(m => m.handle !== own)
         .map(m => ({ handle: m.handle, note: muteNote(m, now) }));
+}
+
+// Temporary mute from a post's menu (twitterTracker.js). The ledger write
+// boxes their posts on open pages (the re-apply listener).
+async function tempMuteFromMenu(handle) {
+    const { xOwnHandle } = await chrome.storage.local.get(['xOwnHandle']);
+    const result = await updateLedger(ledger => tempMuteAccount(ledger, handle, { now: Date.now(), ownHandle: xOwnHandle }));
+    if (!result.ledger) return { muted: false };
+    console.log(`[Forcefield BG] Temporarily muted ${result.handle} for ${formatMuteLength(result.ms)}.`);
+    return { muted: true, handle: result.handle, until: result.until, days: Math.round(result.ms / (24 * 3600 * 1000)) };
+}
+// What the menu item should say: how long a temporary mute picked now lasts.
+async function tempMuteOffer(handle) {
+    const { badFaithLedger, xOwnHandle } = await chrome.storage.local.get(['badFaithLedger', 'xOwnHandle']);
+    const h = normalizeHandle(handle);
+    if (!h || h === normalizeHandle(xOwnHandle)) return { offer: false };
+    return { offer: true, days: Math.round(tempMuteLengthMs((badFaithLedger || {})[h], Date.now()) / (24 * 3600 * 1000)) };
 }
 
 // Whether a page run has anything to do: flagged phrases, or muted accounts.
@@ -1341,6 +1360,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 }
             }
             sendResponse({status: "Blocker triggered"});
+        } else if (request.command === "tempMuteOffer") {
+            sendResponse(await tempMuteOffer(request.handle));
+        } else if (request.command === "tempMute") {
+            sendResponse(await tempMuteFromMenu(request.handle));
         } else if (request.command === "autonomousGetConfig") {
             sendResponse({ config: AUTONOMOUS_DEFAULTS });
         } else if (request.command === "autonomousDecide") {

@@ -161,6 +161,67 @@
         }
     }, true);
 
+    // --- Temporary mute, in X's own "⋯" menu (rules in goodFaith.js) --------
+    // Right after X's "Mute @handle" item, a "Temporary mute @handle (7 days)"
+    // item: a copy of X's item with new text and a clock icon, so it looks
+    // like part of the menu. Picking it asks the background to mute the
+    // account in this browser (their posts get boxed, like a block), logs it
+    // as a mute for the taste profile, and closes the menu. The label shows
+    // 30 days when picking it again would give 30. The menu renders a moment
+    // after the click, so look for it for a short while. Not limited to human
+    // clicks: the autonomous agent only picks items starting with "mute".
+    const CLOCK_ICON = '<g><path d="M12 1.75C6.34 1.75 1.75 6.34 1.75 12S6.34 22.25 12 22.25 22.25 17.66 22.25 12 17.66 1.75 12 1.75zm0 18.5c-4.56 0-8.25-3.69-8.25-8.25S7.44 3.75 12 3.75s8.25 3.69 8.25 8.25-3.69 8.25-8.25 8.25zM13 6.5h-2v6.04l4.55 2.73 1.03-1.72L13 11.46z"></path></g>';
+    function offerTempMute(tries = 0) {
+        const muteItem = [...document.querySelectorAll('[role="menu"] [role="menuitem"]')]
+            .find(i => /^mute @[A-Za-z0-9_]{1,50}$/i.test((i.innerText || i.textContent || '').trim()));
+        if (!muteItem) {
+            if (tries < 20) setTimeout(() => offerTempMute(tries + 1), 50);
+            return;
+        }
+        const menu = muteItem.closest('[role="menu"]');
+        if (menu.querySelector('[data-forcefield-temp-mute]')) return;
+        const handle = '@' + /@([A-Za-z0-9_]+)/.exec(muteItem.innerText || muteItem.textContent)[1];
+        try { if (!chrome.runtime || !chrome.runtime.id) return; } catch (e) { return; }
+        chrome.runtime.sendMessage({ command: 'tempMuteOffer', handle }, (res) => {
+            if (chrome.runtime.lastError || !res || !res.offer) return; // own account, or the background is asleep
+            if (!muteItem.isConnected || menu.querySelector('[data-forcefield-temp-mute]')) return;
+            muteItem.after(tempMuteItem(muteItem, handle, res.days));
+        });
+    }
+    function tempMuteItem(muteItem, handle, days) {
+        const item = muteItem.cloneNode(true); // copies no listeners: X's Mute won't fire
+        item.dataset.forcefieldTempMute = '1';
+        item.removeAttribute('data-testid');
+        const label = `Temporary mute ${handle} (${days} days)`;
+        const leaves = [...item.querySelectorAll('*')].filter(el => !el.children.length && el.textContent.trim());
+        if (leaves.length) {
+            leaves[0].textContent = label;
+            leaves.slice(1).forEach(l => { l.textContent = ''; });
+        } else {
+            item.textContent = label;
+        }
+        const icon = item.querySelector('svg');
+        if (icon) icon.innerHTML = CLOCK_ICON;
+        item.addEventListener('mouseenter', () => { item.style.backgroundColor = 'rgba(127, 127, 127, 0.1)'; });
+        item.addEventListener('mouseleave', () => { item.style.backgroundColor = ''; });
+        item.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            try { if (!chrome.runtime || !chrome.runtime.id) return; } catch (e) { return; }
+            chrome.runtime.sendMessage({ command: 'tempMute', handle }, () => { void chrome.runtime.lastError; });
+            const fromPost = pendingTweet && (pendingTweet.handle || '').toLowerCase() === handle.toLowerCase();
+            record('muted', fromPost ? pendingTweet : { text: '', displayName: '', handle, url: '' });
+            // X closes its menus on Escape.
+            item.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+        });
+        return item;
+    }
+    // A post's caret, or the "⋯" on a profile page.
+    document.addEventListener('click', (e) => {
+        const t = e.target;
+        if (t && t.closest && t.closest('[data-testid="caret"], [data-testid="userActions"]')) offerTempMute();
+    }, true);
+
     // --- For good-faith mutes (goodFaith.js) ---------------------------------
     // Followed accounts, from xFollowWatch.js in the page world: stored under
     // local `xFollowing` as { "@handle": true }, followed ones only, so it

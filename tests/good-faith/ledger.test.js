@@ -109,6 +109,59 @@ const post = (handle, text) => ({ handle, text });
     check(!f.changed && G.activeMutes(f.ledger, {}, T0 + 1).length === 1, 'a like older than the mute leaves it in place');
 }
 
+// --- Temporary mute (picked from a post's menu) ---
+{
+    let r = G.tempMuteAccount({}, '@Annoying', { now: T0 });
+    check(r.ledger && r.handle === '@annoying' && r.ms === 7 * D && r.until === T0 + 7 * D, 'first temporary mute: 7 days', JSON.stringify(r));
+    let ledger = r.ledger;
+    const m = G.activeMutes(ledger, {}, T0 + D);
+    check(m.length === 1 && m[0].temporary && m[0].until === T0 + 7 * D, 'temporary mute is active and marked temporary', JSON.stringify(m));
+    check(G.muteNote(m[0], T0 + D) === 'Temporarily muted by you: @annoying (6d left)', 'temporary mute note', G.muteNote(m[0], T0 + D));
+    check(G.activeMutes(ledger, {}, T0 + 7 * D + 1).length === 0, 'over after 7 days');
+    // Again within 30 days of it ending (day 7 + 29 = day 36): 30 days.
+    r = G.tempMuteAccount(ledger, '@annoying', { now: T0 + 36 * D });
+    check(r.ms === 30 * D, 'again 29 days after it ended (36 days after the first): 30 days', r.ms / D);
+    // Again within 30 days of that one ending: still 30.
+    r = G.tempMuteAccount(r.ledger, '@annoying', { now: T0 + 36 * D + 30 * D + 10 * D });
+    check(r.ms === 30 * D, 'again 10 days after the 30-day one ended: 30 days again', r.ms / D);
+    // Past the window: back to 7.
+    r = G.tempMuteAccount(ledger, '@annoying', { now: T0 + 7 * D + 30 * D + 60000 });
+    check(r.ms === 7 * D, 'again 30 days and a minute after it ended (37+ days after the first): 7 days', r.ms / D);
+    r = G.tempMuteAccount(ledger, '@annoying', { now: T0 + 37 * D });
+    check(r.ms === 30 * D, 'exactly 37 days after the first: still 30 days');
+    // Picked again while it is still on: 30 days from now.
+    r = G.tempMuteAccount(ledger, '@annoying', { now: T0 + 2 * D });
+    check(r.ms === 30 * D && r.until === T0 + 32 * D, 'again while still muted: 30 days from now');
+    check(G.tempMuteLengthMs(ledger['@annoying'], T0 + 10 * D) === 30 * D && G.tempMuteLengthMs(undefined, T0) === 7 * D, 'tempMuteLengthMs tells the menu which length it would be');
+    // Own handle and junk are refused.
+    check(G.tempMuteAccount({}, '@Me', { now: T0, ownHandle: '@me' }).ledger === null && G.tempMuteAccount({}, 'not a handle!', { now: T0 }).ledger === null, 'own handle and junk refused');
+    // Followed accounts: no 7-day cap on the user's own temporary mute.
+    r = G.tempMuteAccount(ledger, '@annoying', { now: T0 + 36 * D });
+    check(G.activeMutes(r.ledger, { '@annoying': true }, T0 + 50 * D).length === 1, 'a followed account stays temporarily muted past 7 days (30-day mute)');
+    // Switched off: bad-faith mutes drop out, temporary mutes stay.
+    let both = G.recordBadFaithPosts({}, [post('@both', 'both one'), post('@both', 'both two'), post('@auto', 'auto one'), post('@auto', 'auto two')], { now: T0 }).ledger;
+    both = G.tempMuteAccount(both, '@both', { now: T0 }).ledger;
+    check(G.activeMutes(both, {}, T0 + 60000).map(x => x.handle).sort().join() === '@auto,@both', 'on: both kinds active');
+    check(G.activeMutes(both, {}, T0 + 60000, { includeAuto: false }).map(x => x.handle).join() === '@both', 'switched off: only the temporary mute');
+    check(G.activeMutes(both, {}, T0 + 60000).find(x => x.handle === '@both').temporary === true, 'the longer of the two decides the note (7-day temporary beats 1-hour bad-faith)');
+    // Bad-faith posts seen during a temporary mute are covered by it.
+    r = G.recordBadFaithPosts(G.tempMuteAccount({}, '@quiet', { now: T0 }).ledger, [post('@quiet', 'q one'), post('@quiet', 'q two')], { now: T0 + D });
+    check(r.muted.length === 0 && r.ledger['@quiet'].posts.length === 0, 'bad-faith posts during a temporary mute do not count');
+    // A like ends it early; the 30-day window counts from the like.
+    const iso = ms => new Date(ms).toISOString();
+    let f = G.forgiveLikedAccounts(ledger, [{ handle: '@annoying', ts: iso(T0 + 2 * D) }]);
+    check(f.forgiven.join() === '@annoying' && G.activeMutes(f.ledger, {}, T0 + 2 * D + 1).length === 0, 'a like ends a temporary mute early');
+    check(G.tempMuteAccount(f.ledger, '@annoying', { now: T0 + 31 * D }).ms === 30 * D && G.tempMuteAccount(f.ledger, '@annoying', { now: T0 + 33 * D }).ms === 7 * D, 'after a like, the 30-day window runs from the like');
+    f = G.forgiveLikedAccounts(ledger, [{ handle: '@annoying', ts: iso(T0 - D) }]);
+    check(!f.changed && G.activeMutes(f.ledger, {}, T0 + D).length === 1, 'a like from before the temporary mute leaves it on');
+    // Popup lines.
+    const lines = G.describeLedger(r.ledger, {}, T0 + D);
+    check(lines.join('|') === '@quiet · muted by you, 6d left (temporary mute)', 'popup line for a temporary mute', lines.join('|'));
+    const after = G.describeLedger(ledger, {}, T0 + 10 * D);
+    check(after.join('|') === '@annoying · a temporary mute in the next 27d lasts 30 days', 'popup line inside the 30-day window', after.join('|'));
+    check(G.describeLedger(ledger, {}, T0 + 38 * D).length === 0, 'popup: nothing once the window has passed');
+}
+
 // --- Attribution: which tweet a bad-faith phrase came from ---
 {
     const tweets = [

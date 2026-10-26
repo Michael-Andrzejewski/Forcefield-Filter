@@ -178,6 +178,27 @@ const tw = (handle, text) => ({ handle, text });
         check(L['@jevcrank'] && L['@jevcrank'].mutes === 1, 'Jev: two bad-faith tweets mute the account', JSON.stringify(L['@jevcrank']));
         check(!L['@unflagged'] && !L['@fine'], 'Jev: unflagged tweets and good-faith tweets do not count');
     }
+    {
+        // Temporary mute from a post's menu (twitterTracker.js asks, then mutes).
+        const ask = msg => new Promise(resolve => messageListeners.forEach(fn => fn(msg, { tab: tabs[0] }, resolve)));
+        let offer = await ask({ command: 'tempMuteOffer', handle: '@Annoy' });
+        check(offer.offer === true && offer.days === 7, 'menu offer: 7 days the first time', JSON.stringify(offer));
+        check((await ask({ command: 'tempMuteOffer', handle: '@me' })).offer === false, 'menu offer: not for your own account');
+        await chrome.storage.sync.set({ goodFaithMutes: false }); // temporary mutes work with the switch off
+        await sleep(30);
+        executed.length = 0;
+        const res = await ask({ command: 'tempMute', handle: '@Annoy' });
+        await sleep(80);
+        check(res.muted === true && res.handle === '@annoy' && res.days === 7, 'temporary mute saved', JSON.stringify(res));
+        const runs = blockerRuns();
+        const muted = runs.length ? runs[runs.length - 1].args[5] : [];
+        check(muted.map(m => m.handle).join() === '@annoy' && /^Temporarily muted by you: @annoy \((7d|6d 23h) left\)$/.test(muted[0].note), 'page re-run boxes the account with the switch off; bad-faith mutes left out', JSON.stringify(muted));
+        offer = await ask({ command: 'tempMuteOffer', handle: '@annoy' });
+        check(offer.days === 30, 'picked again while on: the menu offers 30 days', JSON.stringify(offer));
+        check((await ask({ command: 'tempMute', handle: '@annoy' })).days === 30, 'and mutes for 30');
+        await chrome.storage.sync.set({ goodFaithMutes: true });
+        await sleep(30);
+    }
     check(errors.length === 0, 'no errors logged', errors.slice(0, 3).join(' | '));
     console.log(`good-faith flow: ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

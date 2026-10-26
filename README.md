@@ -82,6 +82,18 @@ The popup's **Good-Faith Mutes** card lists who is muted, for how long, and who 
 
 To know whom you follow, Forcefield reads the follow flags in the data X's own page downloads (see Privacy below). Accounts it hasn't seen yet count as not followed until they appear in your timeline.
 
+### Temporary mute
+
+Forcefield adds **Temporary mute @handle** to X's own ⋯ menu on every post (and on profile pages), right below X's Mute. It's your call rather than the AI's:
+
+| | Mute |
+|---|---|
+| first time | 7 days |
+| again while it's on, or within 30 days of it ending (so up to 37 days after the first) | 30 days |
+| again after that window | 7 days |
+
+The menu item shows which length you'll get. Their posts are boxed as `Temporarily muted by you: @handle (6d 23h left)`. A temporary mute works even with the bad-faith switch off, has no 7-day cap for accounts you follow, and is logged as a mute for your taste profile. Liking one of their posts ends it early; the 30-day window then counts from that like.
+
 ## Cost
 
 Scanning sends text to a paid API, so browsing costs real money (roughly cents per session with Haiku on tweet-only mode). Forcefield ships with a budget guard: spending is tracked from each response's token usage, and calls pause automatically at $1/hour or $2/day by default. Both limits are adjustable under **AI Budget** in Developer mode.
