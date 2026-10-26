@@ -95,6 +95,29 @@ severityDebugBoxes.forEach(box => {
     });
 });
 
+// Good-faith mutes (sync `goodFaithMutes`, on by default): the switch, and
+// the accounts muted or on their way to a mute (local `badFaithLedger`).
+// The background boxes and unboxes posts on open pages when either changes.
+// describeLedger comes from goodFaith.js.
+const goodFaithToggle = document.getElementById('goodFaithMutesToggle');
+function renderGoodFaith() {
+    const list = document.getElementById('goodFaithList');
+    chrome.storage.sync.get(['goodFaithMutes'], (s) => {
+        if (goodFaithToggle) goodFaithToggle.checked = s.goodFaithMutes !== false;
+        chrome.storage.local.get(['badFaithLedger', 'xFollowing'], (r) => {
+            if (!list) return;
+            const lines = describeLedger(r.badFaithLedger, r.xFollowing, Date.now());
+            list.textContent = lines.length ? lines.join('\n')
+                : 'No account has posted in bad faith yet. Accounts appear here as scans on X find bad-faith posts.';
+        });
+    });
+}
+if (goodFaithToggle) {
+    goodFaithToggle.addEventListener('change', () => {
+        chrome.storage.sync.set({ goodFaithMutes: goodFaithToggle.checked });
+    });
+}
+
 function updateJevSettingsVisibility(selectedModel) {
     document.querySelectorAll('.jev-settings').forEach(box => {
         box.style.display = selectedModel === JEV_MODEL_ID ? '' : 'none';
@@ -114,6 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadApiKeys(); // Load API keys
     loadHideThreshold();
     loadSeverityDebug();
+    renderGoodFaith(); // Good-faith mutes: switch + muted accounts
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
@@ -472,6 +496,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
     if (area === 'local' && changes.tasteSummary) {
         loadTasteProfile();
+    }
+    if ((area === 'local' && (changes.badFaithLedger || changes.xFollowing)) || (area === 'sync' && changes.goodFaithMutes)) {
+        renderGoodFaith();
     }
 });
 

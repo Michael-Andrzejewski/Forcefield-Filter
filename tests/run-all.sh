@@ -13,5 +13,6 @@ node "$D/severity/reapply.test.js" || status=1
 "$D/orphan/run.sh" || status=1
 "$D/claim-retry/run.sh" || status=1
 "$D/revealed-bar/run.sh" || status=1
+"$D/good-faith/run.sh" || status=1
 [ $status = 0 ] && echo "ALL PASSED" || echo "SOME FAILED"
 exit $status

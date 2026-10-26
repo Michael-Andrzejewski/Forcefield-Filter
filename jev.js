@@ -23,6 +23,16 @@ const JEV_SCORE_LEVELS = [
     'Nothing this user would mind: good-faith, substantive, neutral, or merely blunt content, or anything matching the likes or Forcefield corrections in user_taste_profile.'
 ].concat(SEVERITY_BANDS.map(b => `${b.label}: ${b.text}.`));
 
+// Good-faith mutes (goodFaith.js): with askFaith, each tweet gets a second,
+// two-level score question. Its score is the probability of bad faith, and
+// a tweet counts as bad faith from JEV_BAD_FAITH_MIN up (the text models are
+// told to mark only clear cases too).
+const JEV_FAITH_LEVELS = [
+    'Good faith: written to inform, share, or understand, even if it is wrong, blunt, angry, or strongly disagrees.',
+    'Bad faith: written to score points, provoke, or mislead: strawmanning or misrepresenting others, mockery or contempt in place of an argument, insults, trolling or baiting, sneering dismissal without engaging, or claims the author shows no interest in being true.'
+];
+const JEV_BAD_FAITH_MIN = 0.7;
+
 // Jev's 0..levels-1 score -> severity 0-10 (0 means not flagged).
 function jevSeverity(score) {
     if (typeof score !== 'number' || !isFinite(score)) return null;
@@ -44,8 +54,9 @@ function jevFilterRules(systemPrompt) {
         .trim();
 }
 
-// tweets: [{ text, handle }] -> { model, state, questions } with keys t0..tN.
-function buildJevRequest({ tweets, systemPrompt, tasteContext }) {
+// tweets: [{ text, handle }] -> { model, state, questions } with keys t0..tN,
+// plus f0..fN (the bad-faith question) with askFaith.
+function buildJevRequest({ tweets, systemPrompt, tasteContext, askFaith }) {
     const state = {
         task: "You are this user's personal content filter for X (Twitter). For each tweet asked about, decide whether the user would want it hidden from their feed.",
         filter_rules: jevFilterRules(systemPrompt),
@@ -61,6 +72,16 @@ function buildJevRequest({ tweets, systemPrompt, tasteContext }) {
             },
             criteria: JEV_SCORE_LEVELS
         };
+        if (askFaith) {
+            questions['f' + i] = {
+                type: 'score',
+                instructions: {
+                    tweet: { author: t.handle || '(unknown)', text: String(t.text || '').slice(0, JEV_MAX_TWEET_CHARS) },
+                    question: 'Is `tweet` written in good faith or in bad faith?'
+                },
+                criteria: JEV_FAITH_LEVELS
+            };
+        }
     });
     return { model: JEV_MODEL, state, questions };
 }
@@ -86,19 +107,22 @@ async function callJev({ request, typesafeApiKey, fetchImpl }) {
     return { answers: result.answers || {}, usage: u, model: result.model };
 }
 
-// Rates every tweet. Returns [{ tweet, score, severity }] in input order:
-// score is Jev's raw level (0-5), severity the 0-10 rating. A tweet whose
-// answer is missing gets null for both and is never hidden.
-async function classifyTweetsWithJev({ tweets, systemPrompt, tasteContext, typesafeApiKey, fetchImpl }) {
+// Rates every tweet. Returns [{ tweet, score, severity, badFaith }] in input
+// order: score is Jev's raw level (0-5), severity the 0-10 rating. A tweet
+// whose answer is missing gets null for both and is never hidden. badFaith
+// is true or false with askFaith (false when that answer is missing), else null.
+async function classifyTweetsWithJev({ tweets, systemPrompt, tasteContext, typesafeApiKey, fetchImpl, askFaith }) {
     const out = [];
     for (let start = 0; start < tweets.length; start += JEV_MAX_TWEETS_PER_REQUEST) {
         const chunk = tweets.slice(start, start + JEV_MAX_TWEETS_PER_REQUEST);
-        const request = buildJevRequest({ tweets: chunk, systemPrompt, tasteContext });
+        const request = buildJevRequest({ tweets: chunk, systemPrompt, tasteContext, askFaith });
         const { answers } = await callJev({ request, typesafeApiKey, fetchImpl });
         chunk.forEach((tweet, i) => {
             const a = answers['t' + i];
             const score = a && typeof a.score === 'number' ? a.score : null;
-            out.push({ tweet, score, severity: jevSeverity(score) });
+            const f = answers['f' + i];
+            const badFaith = askFaith ? !!(f && typeof f.score === 'number' && f.score >= JEV_BAD_FAITH_MIN) : null;
+            out.push({ tweet, score, severity: jevSeverity(score), badFaith });
         });
     }
     return out;

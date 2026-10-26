@@ -343,6 +343,21 @@
       margin: 4px 0 0 0;
     }
 
+    .good-faith-list {
+      max-height: 120px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 10px;
+      line-height: 1.4;
+      color: #2c3e50;
+      background: rgba(255,255,255,0.9);
+      border: 1px solid rgba(52,152,219,0.2);
+      border-radius: 7px;
+      padding: 8px;
+      margin: 8px 0 0 0;
+    }
+
     .tag-remove {
       background: rgba(231, 76, 60, 0.2);
       border: none;
@@ -497,6 +512,16 @@
             <label class="severity-debug-row"><input type="checkbox" class="severity-debug"> Debug: show each post's severity under it</label>
             <p class="hide-level-note">The AI rates each flagged post 1-10. Phrases you add yourself, and posts blocked before 2.10, stay hidden at every level.</p>
           </div>
+        </div>
+      </div>
+
+      <!-- Good-Faith Mutes Card -->
+      <div class="card">
+        <div class="ai-model-section">
+          <div class="section-title">Good-Faith Mutes</div>
+          <label class="severity-debug-row"><input type="checkbox" id="goodFaithMutesToggle"> Mute X accounts that keep arguing in bad faith</label>
+          <p class="hide-level-note">Two bad-faith posts within 30 days mute an account for 1 hour. Each bad-faith post after a mute ends mutes it for twice as long: 1h, 2h, 4h, 8h, 1 day, 2 days, 4 days, and so on. Accounts you follow are muted for 7 days at most. Like one of their posts to unmute them and reset the ladder.</p>
+          <pre id="goodFaithList" class="good-faith-list">Loading…</pre>
         </div>
       </div>
 
@@ -774,6 +799,7 @@
   </div>
 
   <script src="llm.js"></script>
+  <script src="goodFaith.js"></script>
   <script src="popup.js"></script>
 </body>
 </html> 

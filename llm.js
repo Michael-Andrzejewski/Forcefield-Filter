@@ -98,6 +98,11 @@ ${SEVERITY_BANDS.map(b => `${b.low}-${b.high} ${b.label}: ${b.text}.`).join('\n'
 Write the rating as an attribute: <Negative severity="6">exact text</Negative>.
 The user chooses a level each day and only tags at or above it are hidden, so tag everything they might not want to see, including mild cases, and let the rating carry the difference. Still never tag neutral descriptions, news headlines, interface text, or anything matching the likes in the taste profile.`;
 
+// Appended after SEVERITY_INSTRUCTIONS while good-faith mutes are on (sync
+// `goodFaithMutes`, default on). Accounts whose tags keep coming back
+// faith="bad" get muted; see goodFaith.js.
+const FAITH_INSTRUCTIONS = `Also judge each tag for bad faith. A statement is in bad faith when it is written to score points, provoke, or mislead rather than to inform or understand: misrepresenting or strawmanning what someone said, mockery or contempt in place of an argument, insults, trolling or baiting, sneering dismissal of a claim without engaging with it, or asserting things the author shows no interest in being true. Being wrong, blunt, angry, briefly sarcastic, or strongly disagreeing is not bad faith on its own. When bad faith is clear, add faith="bad" to the tag: <Negative severity="7" faith="bad">exact text</Negative>. Otherwise leave the attribute out.`;
+
 // --- Cost guard ---------------------------------------------------------
 // USD per million tokens (July 2026; Haiku 5.5 added October 2026). Haiku 5.5
 // is $0.10/$0.50 for prompts up to 100K tokens; scans are far below that. Cache reads bill ~0.1x input, cache
@@ -317,9 +322,10 @@ async function callGemini({ model, system, userText, maxTokens, geminiApiKey }) 
     };
 }
 
-// Parse <Negative severity="N">...</Negative> tags out of a model response
-// into [{ text, severity }]; severity is null when the tag has no usable
-// rating. Shared by the service worker and the popup.
+// Parse <Negative severity="N" faith="bad">...</Negative> tags out of a model
+// response into [{ text, severity, badFaith }]; severity is null when the tag
+// has no usable rating, badFaith true only for faith="bad". Shared by the
+// service worker and the popup.
 function extractRatedNegativeTags(text) {
     const regex = /<Negative\b([^>]*)>(.*?)<\/Negative>/gs;
     const matches = [];
@@ -329,7 +335,11 @@ function extractRatedNegativeTags(text) {
         if (!suggestion) continue;
         const rating = /severity\s*=\s*["']?(\d+(?:\.\d+)?)/i.exec(match[1]);
         const n = rating ? Math.round(parseFloat(rating[1])) : NaN;
-        matches.push({ text: suggestion, severity: isFinite(n) ? Math.min(10, Math.max(1, n)) : null });
+        matches.push({
+            text: suggestion,
+            severity: isFinite(n) ? Math.min(10, Math.max(1, n)) : null,
+            badFaith: /faith\s*=\s*["']?bad\b/i.test(match[1])
+        });
     }
     return matches;
 }
@@ -344,7 +354,7 @@ self.ForcefieldLLM = {
     AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM,
     JEV_MODEL_ID, SELECTABLE_AI_MODELS, textModelFor, usesJevOnX, formatSpendByModel,
     extractNegativeTags, extractRatedNegativeTags, getSpendState, getSpendLimits, DEFAULT_SPEND_LIMITS, MODEL_PRICING,
-    SEVERITY_BANDS, DEFAULT_HIDE_THRESHOLD, SEVERITY_INSTRUCTIONS, severityBand, hideThresholdFrom, entriesToHide, describeHideThreshold,
+    SEVERITY_BANDS, DEFAULT_HIDE_THRESHOLD, SEVERITY_INSTRUCTIONS, FAITH_INSTRUCTIONS, severityBand, hideThresholdFrom, entriesToHide, describeHideThreshold,
     tweetScanKey
 };
 

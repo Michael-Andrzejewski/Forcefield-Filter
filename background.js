@@ -1,5 +1,5 @@
 // Provider abstraction (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM)
-importScripts('llm.js', 'jev.js');
+importScripts('llm.js', 'jev.js', 'goodFaith.js');
 
 
 // AI Model Configuration now lives in llm.js (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL).
@@ -269,7 +269,9 @@ The output should be ready to be used directly as the new system prompt.`;
 // We need the actual function that does the blocking.
 // severityView (debug, optional): { threshold, entries, scannedKeys } — when
 // set, every visible post gets a line with its rating (see the end).
-function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, allowedPostKeys, severityView) {
+// mutedAuthors (optional): [{ handle: "@h", note }] — accounts muted for bad
+// faith (goodFaith.js). Every post they wrote is boxed with that note.
+function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, allowedPostKeys, severityView, mutedAuthors) {
     const allowedKeySet = new Set(allowedPostKeys || []);
     function normalizeApostrophes(str) {
         if (!str) return str;
@@ -597,7 +599,10 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
             delete el.dataset.forcefieldRevealed;
             applyTreatment(el);
         };
-        const actions = [
+        // A muted account's post: the verdicts are about flagged phrases, so
+        // they don't apply. Only a like on one of their posts unmutes.
+        const muted = !!el.dataset.forcefieldMute;
+        const actions = muted ? [['Hide again', rehide]] : [
             ['Hide again', rehide],
             ['Good block', () => { recordBlockVerdict(el, 'goodBlock'); rehide(); }],
             ['Bad block', () => { recordBlockVerdict(el, 'badBlock'); link3.textContent = 'Bad block (noted)'; }]
@@ -617,6 +622,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
             bar.appendChild(a);
             if (i === 2) link3 = a;
         });
+        if (muted) bar.appendChild(document.createTextNode(' · Like one of their posts to unmute'));
         // Swallow clicks on the gaps between links too.
         bar.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); });
         placeBar(host, bar);
@@ -664,8 +670,11 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
                 const note = document.createElement('div');
                 note.dataset.forcefieldNote = '1';
                 // The rating shows which Hide level would let this post through.
+                // A muted account's post says who and for how long instead.
                 const severity = elementToHide.dataset.forcefieldSeverity;
-                note.textContent = 'Blocked by Forcefield' + (severity ? ` (severity ${severity})` : '') + ' - click to reveal';
+                const muteText = elementToHide.dataset.forcefieldMute;
+                note.textContent = muteText ? muteText + ' - click to reveal'
+                    : 'Blocked by Forcefield' + (severity ? ` (severity ${severity})` : '') + ' - click to reveal';
                 note.style.cssText = 'display: block !important; flex: 1 1 auto !important; width: 100% !important; box-sizing: border-box !important; color: #999 !important; font-family: sans-serif !important; font-size: 12px !important; line-height: 16px !important; text-align: center !important; padding: 10px !important; user-select: none;';
                 elementToHide.appendChild(note);
                 elementToHide.style.cursor = 'pointer';
@@ -692,6 +701,38 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
                 elementToHide.dataset[hiddenMarker] = 'true';
                 elementsAffected++;
             }
+        }
+    }
+
+    // "@handle" (lower case) of the account that wrote a post: the first name
+    // block in it. A quoted post's name block comes after the quoting post's.
+    function authorHandleOf(article) {
+        const nameEl = article.querySelector('[data-testid="User-Name"]');
+        if (!nameEl) return '';
+        const line = (nameEl.innerText || '').split('\n').map(s => s.trim()).find(l => l.startsWith('@'));
+        const m = /@([A-Za-z0-9_]{1,50})/.exec(line || nameEl.textContent || '');
+        return m ? '@' + m[1].toLowerCase() : '';
+    }
+
+    // Good-faith mutes: box every post by a muted account. This runs before
+    // the phrase pass, which then skips whatever is inside these boxes.
+    // A post the user revealed keeps its note, so its line still offers the
+    // mute's options.
+    const mutedNotes = new Map((mutedAuthors || []).map(m => [m.handle, m.note]));
+    const mutedPosts = new Set();
+    document.querySelectorAll('[data-forcefield-mute]').forEach(el => { if (!el.dataset.forcefieldRevealed) delete el.dataset.forcefieldMute; });
+    if (mutedNotes.size > 0) {
+        // Never the user's own posts (X's nav links to their profile).
+        const profileLink = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+        const own = profileLink ? '@' + (profileLink.getAttribute('href') || '').replace(/^\//, '').toLowerCase() : '';
+        for (const article of document.querySelectorAll('article')) {
+            if (article.dataset.forcefieldRevealed) continue;
+            const handle = authorHandleOf(article);
+            const note = handle && handle !== own ? mutedNotes.get(handle) : null;
+            if (!note) continue;
+            article.dataset.forcefieldMute = note;
+            mutedPosts.add(article);
+            applyTreatment(article);
         }
     }
 
@@ -806,6 +847,7 @@ function actualContentBlockingFunction(blockListToUse, debugMode, whiteboxMode, 
 
                 for (const target of targets) {
                     if (isAllowedPost(target)) continue; // user said "Bad block" on this post
+                    if (!mutedPosts.has(target)) delete target.dataset.forcefieldMute;
                     if (typeof matchedBlockItem.severity === 'number') target.dataset.forcefieldSeverity = String(matchedBlockItem.severity);
                     else delete target.dataset.forcefieldSeverity;
                     applyTreatment(target);
@@ -893,10 +935,11 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
         const { scannedTweetKeys } = chrome.storage.session ? await chrome.storage.session.get(['scannedTweetKeys']) : {};
         severityView = { threshold, entries: blockList || [], scannedKeys: scannedTweetKeys || [] };
     }
+    const muted = await mutedForPage();
     chrome.scripting.executeScript({
             target: { tabId: tabId },
             func: actualContentBlockingFunction,
-            args: [toHide, debugMode, whiteboxMode, allowedKeys, severityView]
+            args: [toHide, debugMode, whiteboxMode, allowedKeys, severityView, muted]
         }).catch(err => {
             if (err.message.includes("No tab with id") || 
                 err.message.includes("Cannot access") ||
@@ -907,6 +950,70 @@ async function triggerPageBlock(tabId, blockList, debugMode, whiteboxMode) {
             }
         });
 }
+
+// --- Good-faith mutes (rules and ladder in goodFaith.js) -------------------
+// Scans add bad-faith posts to the ledger (local `badFaithLedger`), likes
+// logged by twitterTracker.js forgive, and the page boxes muted accounts'
+// posts. Followed accounts (local `xFollowing`) come from xFollowWatch.js;
+// the user's own handle (local `xOwnHandle`) from twitterTracker.js.
+
+async function goodFaithMutesOn() {
+    const { goodFaithMutes } = await chrome.storage.sync.get(['goodFaithMutes']);
+    return goodFaithMutes !== false; // on unless switched off in the popup
+}
+
+// Ledger writes go through one chain: a scan and a like can land together.
+// fn(ledger) returns { ledger } to save it, or { ledger: null } to skip.
+let ledgerChain = Promise.resolve();
+function updateLedger(fn) {
+    const run = ledgerChain.then(async () => {
+        const { badFaithLedger } = await chrome.storage.local.get(['badFaithLedger']);
+        const result = fn(badFaithLedger || {});
+        if (result.ledger) await chrome.storage.local.set({ badFaithLedger: result.ledger });
+        return result;
+    });
+    ledgerChain = run.catch(e => console.warn('[Forcefield BG] Good-faith ledger update failed:', e));
+    return run;
+}
+
+// posts: [{ handle, text }] a scan judged to be in bad faith.
+async function recordBadFaith(posts, tabId) {
+    if (!posts || posts.length === 0) return;
+    const { xFollowing, xOwnHandle } = await chrome.storage.local.get(['xFollowing', 'xOwnHandle']);
+    const now = Date.now();
+    const result = await updateLedger(ledger => recordBadFaithPosts(ledger, posts, { now, following: xFollowing || {}, ownHandle: xOwnHandle }));
+    const mutedText = result.muted.map(m => `${m.handle} for ${formatMuteLength(m.until - now)} (mute ${m.n})`).join(', ');
+    logToPageConsole(tabId, `[Forcefield AI] Bad faith from ${[...new Set(posts.map(p => normalizeHandle(p.handle)))].join(', ')}.` + (mutedText ? ` Muted ${mutedText}.` : ''));
+}
+
+// Accounts to box on the page right now: [{ handle, note }].
+async function mutedForPage() {
+    if (!(await goodFaithMutesOn())) return [];
+    const { badFaithLedger, xFollowing, xOwnHandle } = await chrome.storage.local.get(['badFaithLedger', 'xFollowing', 'xOwnHandle']);
+    const now = Date.now();
+    const own = normalizeHandle(xOwnHandle);
+    return activeMutes(badFaithLedger, xFollowing, now)
+        .filter(m => m.handle !== own)
+        .map(m => ({ handle: m.handle, note: muteNote(m, now) }));
+}
+
+// Whether a page run has anything to do: flagged phrases, or muted accounts.
+async function blockerHasWork(blockList) {
+    return (blockList && blockList.length > 0) || (await mutedForPage()).length > 0;
+}
+
+// A like (twitterTracker.js logs them) forgives the account it was for.
+chrome.storage.onChanged.addListener(async (changes, area) => {
+    if (area !== 'local' || !changes.twitterActivity) return;
+    const liked = (changes.twitterActivity.newValue && changes.twitterActivity.newValue.liked) || [];
+    const result = await updateLedger(ledger => {
+        const r = forgiveLikedAccounts(ledger, liked);
+        return { ledger: r.changed ? r.ledger : null, forgiven: r.forgiven };
+    });
+    // The ledger write re-applies the blocker on open pages (listener below).
+    if (result.forgiven.length) console.log('[Forcefield BG] Liked, so unmuted and reset:', result.forgiven.join(', '));
+});
+// --- End good-faith mutes ---------------------------------------------------
 
 // Modified addSuggestedWords for background context
 async function addSuggestedWords(suggestions, defaultLevelOverride = null, source = 'ai_continuous', tabIdForContext) {
@@ -1143,21 +1250,24 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     }
 });
 
-// The Hide level slider moved, or the severity debug view was switched:
+// The Hide level slider moved, the severity debug view was switched, or an
+// account was muted or unmuted (a scan, a like, the good-faith switch):
 // re-apply the blocklist on every open page of an allowed site, so posts at
 // or above the new level get boxed and posts below it come back, without
 // waiting for the next scroll.
 chrome.storage.onChanged.addListener(async (changes, area) => {
     const levelMoved = area === 'sync' && changes.hideThreshold;
     const debugSwitched = area === 'local' && changes.severityDebug;
-    if (!levelMoved && !debugSwitched) return;
+    const mutesChanged = (area === 'local' && changes.badFaithLedger) || (area === 'sync' && changes.goodFaithMutes);
+    if (!levelMoved && !debugSwitched && !mutesChanged) return;
     const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
-    if (!blockList || blockList.length === 0) return;
+    // Mutes switched off or ended: still run once, so their boxes come off.
+    if (!mutesChanged && !(await blockerHasWork(blockList))) return;
     let tabs = [];
     try { tabs = await chrome.tabs.query({}); } catch (e) { return; }
     for (const tab of tabs) {
         if (!tab.id || !/^https?:/.test(tab.url || '') || !(await isSiteAllowed(tab.url))) continue;
-        triggerPageBlock(tab.id, blockList, debugMode || false, whiteboxMode !== false);
+        triggerPageBlock(tab.id, blockList || [], debugMode || false, whiteboxMode !== false);
     }
 });
 
@@ -1226,8 +1336,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 const { blockList, debugMode, whiteboxMode } = await new Promise(resolve => {
                     chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode'], resolve);
                 });
-                if (blockList && blockList.length > 0) {
-                    triggerPageBlock(targetTabId, blockList, debugMode || false, whiteboxMode !== false);
+                if (await blockerHasWork(blockList)) {
+                    triggerPageBlock(targetTabId, blockList || [], debugMode || false, whiteboxMode !== false);
                 }
             }
             sendResponse({status: "Blocker triggered"});
@@ -1864,23 +1974,29 @@ async function recordScannedTweets(texts) {
 // rating. The page hides the ones at or above the Hide level.
 async function scanTweetsWithJev(tweets, tabId, allConfig) {
     const threshold = hideThresholdFrom(allConfig.hideThreshold);
+    const askFaith = allConfig.goodFaithMutes !== false;
     logToPageConsole(tabId, `[Forcefield AI] Rating ${tweets.length} tweet(s) via Jev (hide level ${threshold})…`);
     const results = await classifyTweetsWithJev({
         tweets: tweets,
         systemPrompt: allConfig.customSystemPrompt || DEFAULT_SYSTEM_PROMPT,
         tasteContext: await getTasteContext(),
-        typesafeApiKey: allConfig.typesafeApiKey
+        typesafeApiKey: allConfig.typesafeApiKey,
+        askFaith: askFaith
     });
     await recordScannedTweets(results.filter(r => r.severity !== null).map(r => r.tweet.text));
     const flagged = results.filter(r => r.severity !== null && r.severity >= 1);
     const hiddenNow = flagged.filter(r => r.severity >= threshold).length;
     logToPageConsole(tabId, `[Forcefield AI] Jev rated ${results.length} tweet(s); ${flagged.length} flagged, ${hiddenNow} at or above hide level ${threshold}.`,
-        results.map(r => `${r.severity === null ? ' ?' : String(r.severity).padStart(2)} ${r.severity !== null && r.severity >= 1 && r.severity >= threshold ? 'HIDE' : 'keep'}  ${(r.tweet.handle || '')} ${String(r.tweet.text).replace(/\s+/g, ' ').slice(0, 90)}`));
+        results.map(r => `${r.severity === null ? ' ?' : String(r.severity).padStart(2)} ${r.severity !== null && r.severity >= 1 && r.severity >= threshold ? 'HIDE' : 'keep'}  ${r.badFaith ? '[bad faith] ' : ''}${(r.tweet.handle || '')} ${String(r.tweet.text).replace(/\s+/g, ' ').slice(0, 90)}`));
     if (flagged.length > 0) {
         // The whole tweet text is the block phrase: the blocker finds the
         // tweet's text element and boxes the post around it.
         await addSuggestionsToBlocklist(flagged.map(r => ({ text: String(r.tweet.text).slice(0, 300), severity: r.severity })),
             tabId, allConfig.whiteboxMode, allConfig.debugMode, 'jev');
+    }
+    // Bad faith counts only on posts flagged at all, as with the text models.
+    if (askFaith) {
+        await recordBadFaith(flagged.filter(r => r.badFaith).map(r => ({ handle: r.tweet.handle, text: r.tweet.text })), tabId);
     }
 }
 
@@ -1889,7 +2005,7 @@ async function handleNewContent(text, tabId, tweets) {
     console.log(`${logPrefix} Received new content. Length: ${text.length}`);
 
     try {
-        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey', 'hideThreshold']);
+        const syncData = await chrome.storage.sync.get(['customSystemPrompt', 'customUserPromptPrefix', 'selectedAiModel', 'anthropicApiKey', 'geminiApiKey', 'xEngine', 'typesafeApiKey', 'hideThreshold', 'goodFaithMutes']);
         const localData = await chrome.storage.local.get(['whiteboxMode', 'debugMode']);
         const allConfig = { ...syncData, ...localData };
 
@@ -1898,8 +2014,8 @@ async function handleNewContent(text, tabId, tweets) {
         if (usesJevOnX(allConfig) && Array.isArray(tweets) && tweets.length > 0) {
             await scanTweetsWithJev(tweets, tabId, allConfig);
             const { blockList } = await chrome.storage.local.get(['blockList']);
-            if (blockList && blockList.length > 0) {
-                triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode !== false);
+            if (await blockerHasWork(blockList)) {
+                triggerPageBlock(tabId, blockList || [], allConfig.debugMode || false, allConfig.whiteboxMode !== false);
             }
             return;
         }
@@ -1921,8 +2037,11 @@ async function handleNewContent(text, tabId, tweets) {
         // plus the 5 freshest liked and 5 freshest disliked posts. The 1-10
         // rating rules sit between the two, so custom prompts are rated too
         // and the cached prefix stays stable.
+        // With good-faith mutes on, the model also marks bad-faith tags
+        // (FAITH_INSTRUCTIONS); it stays in the cached prefix on every site.
         const tasteContext = await getTasteContext();
-        const fullSystemPrompt = [systemPrompt, SEVERITY_INSTRUCTIONS, tasteContext].filter(Boolean).join('\n\n');
+        const askFaith = allConfig.goodFaithMutes !== false;
+        const fullSystemPrompt = [systemPrompt, SEVERITY_INSTRUCTIONS, askFaith ? FAITH_INSTRUCTIONS : '', tasteContext].filter(Boolean).join('\n\n');
 
         console.log(`${logPrefix} Sending request to AI via ${provider} (${aiModel})...`);
         // Surface the scan in the *page* console too, so behaviour is visible
@@ -1948,10 +2067,15 @@ async function handleNewContent(text, tabId, tweets) {
         console.log(`${logPrefix} Received ${suggestions.length} suggestions from AI.`);
         const threshold = hideThresholdFrom(allConfig.hideThreshold);
         logToPageConsole(tabId, `[Forcefield AI] Flagged ${suggestions.length} statement(s); ${entriesToHide(suggestions, threshold).length} at or above hide level ${threshold}.`,
-            suggestions.map(s => `${s.severity === null ? ' ?' : String(s.severity).padStart(2)}  ${s.text}`));
+            suggestions.map(s => `${s.severity === null ? ' ?' : String(s.severity).padStart(2)}  ${s.badFaith ? '[bad faith] ' : ''}${s.text}`));
 
         if (suggestions.length > 0) {
             await addSuggestionsToBlocklist(suggestions, tabId, allConfig.whiteboxMode, allConfig.debugMode);
+        }
+        // Bad-faith tags count against the account that posted them. Only X
+        // has authors (tweets carries each tweet's handle).
+        if (askFaith && Array.isArray(tweets) && tweets.length > 0) {
+            await recordBadFaith(attributeBadFaith(suggestions.filter(s => s.badFaith).map(s => s.text), tweets), tabId);
         }
 
         // ALWAYS re-apply the current blocklist after a scan — even with zero new
@@ -1959,8 +2083,8 @@ async function handleNewContent(text, tabId, tweets) {
         // so newly rendered posts matching EXISTING entries would otherwise never
         // get hidden/highlighted.
         const { blockList } = await chrome.storage.local.get(['blockList']);
-        if (blockList && blockList.length > 0) {
-            triggerPageBlock(tabId, blockList, allConfig.debugMode || false, allConfig.whiteboxMode !== false);
+        if (await blockerHasWork(blockList)) {
+            triggerPageBlock(tabId, blockList || [], allConfig.debugMode || false, allConfig.whiteboxMode !== false);
         }
 
     } catch (error) {

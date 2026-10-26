@@ -77,10 +77,17 @@ if (typeof window.forcefieldObserverInitialized === 'undefined') {
         return { texts: texts, keys: keys, tweets: tweets, sawTweets: sawTweets };
     }
 
-    // "@handle" of the post a tweetText element belongs to, or ''.
+    // "@handle" of the post a tweetText element belongs to, or ''. The
+    // nearest name block going up from the text: a quoted post sits inside
+    // the quoting post's <article> with its own name block, and good-faith
+    // mutes must pin its text on its own author.
     function handleOf(el) {
         const article = el.closest && el.closest('article');
-        const nameEl = article && article.querySelector('[data-testid="User-Name"]');
+        if (!article) return '';
+        let nameEl = null;
+        for (let node = el.parentElement; node && !nameEl; node = node === article ? null : node.parentElement) {
+            nameEl = node.querySelector('[data-testid="User-Name"]');
+        }
         if (!nameEl) return '';
         return (nameEl.innerText || '').split(/\n/).map(s => s.trim()).find(l => l.startsWith('@')) || '';
     }

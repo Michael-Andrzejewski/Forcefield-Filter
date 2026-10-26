@@ -62,6 +62,26 @@ To calibrate, tick **Debug: show each post's severity under it** (under either s
 
 Claude and Gemini rate inside their reply (`<Negative severity="6">...</Negative>`). Jev by TypeSafe rates each tweet with a six-level score question (nothing to hide, then the five bands), mapped onto the same 0-10 scale. Phrases you add or select yourself have no rating and are hidden at every level, and so are posts flagged before version 2.10.0, until the AI flags them again.
 
+## Good-faith mutes
+
+On X, Forcefield also judges accounts by good faith. Every scan asks the model which flagged posts are written in bad faith: to score points, provoke, or mislead rather than to inform or understand (strawmanning, mockery in place of an argument, insults, trolling, sneering dismissal without engaging, claims the author shows no interest in being true). Being wrong, blunt, angry, or disagreeing is not bad faith on its own. Each bad-faith post counts against the account that wrote it.
+
+Accounts that keep doing it get muted for longer and longer:
+
+| | Mute |
+|---|---|
+| 2 bad-faith posts within 30 days | 1 hour |
+| each bad-faith post after a mute ends | twice the last one: 2 hours, 4, 8, then 1 day, 2 days, 4 days, 8 days, and so on |
+| accounts you follow | the same ladder, but never more than 7 days |
+
+While an account is muted, every post it writes is boxed like a blocked post: `Muted by Forcefield: @handle keeps arguing in bad faith (mute 3, 3h 20m left) - click to reveal`. Posts seen during a mute don't push it higher; they are covered by the mute.
+
+There is no unmute button. **Liking one of their posts unmutes them** and resets their ladder: reveal a post, like it, and the rest of their posts come back at once. A like forgives what came before it, not what comes after. Your own posts are never judged.
+
+The popup's **Good-Faith Mutes** card lists who is muted, for how long, and who is close to a first mute, and has the switch to turn the feature off. A mute only hides posts in your own browser; it never mutes the account on X. Jev answers a second score question per tweet for this (the probability of bad faith; 0.7 and up counts).
+
+To know whom you follow, Forcefield reads the follow flags in the data X's own page downloads (see Privacy below). Accounts it hasn't seen yet count as not followed until they appear in your timeline.
+
 ## Cost
 
 Scanning sends text to a paid API, so browsing costs real money (roughly cents per session with Haiku on tweet-only mode). Forcefield ships with a budget guard: spending is tracked from each response's token usage, and calls pause automatically at $1/hour or $2/day by default. Both limits are adjustable under **AI Budget** in Developer mode.
@@ -78,7 +98,7 @@ You can view, copy, or clear the underlying activity log in the popup too. Only 
 
 ## What the AI sees
 
-Each blocking scan is one request with two parts. The system message is your system prompt, then the 1-10 rating rules, then the taste profile. The user message wraps the new feed text in the content instructions. In brackets, which popup field (or source) each piece comes from:
+Each blocking scan is one request with two parts. The system message is your system prompt, then the 1-10 rating rules, then the bad-faith rules (while good-faith mutes are on), then the taste profile. The user message wraps the new feed text in the content instructions. In brackets, which popup field (or source) each piece comes from:
 
 ```
 ━━━━━━━━━━━━━━━━ SYSTEM MESSAGE ━━━━━━━━━━━━━━━━
@@ -95,6 +115,9 @@ Rate every tag from 1 to 10 for how much this user would want it hidden. ...
 (one line per band, up to 9-10 Genuinely hateful)
 Write the rating as an attribute: <Negative severity="6">exact text</Negative>.
 The user chooses a level each day and only tags at or above it are hidden, so tag everything they might not want to see, including mild cases, ...
+
+[bad-faith rules: fixed, added while good-faith mutes are on]
+Also judge each tag for bad faith. ... When bad faith is clear, add faith="bad" to the tag: <Negative severity="7" faith="bad">exact text</Negative>. ...
 
 [taste profile: the "Taste Profile" field, plus your recent activity]
 This user's taste profile, learned from their own activity. Treat it as the authority on borderline cases: never flag content matching their likes, and lean toward flagging content matching their dislikes.
@@ -136,7 +159,7 @@ Notes:
 
 - The taste block is left out entirely until a profile or some logged activity exists, and each list of 5 recent posts appears only once you have activity of that kind.
 - On X/Twitter the feed content is tweet body text only: no names, handles, or like counts, with a blank line between tweets. On other sites it is the visible page text.
-- The model's reply is just the `<Negative severity="N">...</Negative>` statements. Those go on the local blocklist with their rating, and the Hide Level decides which ones are hidden.
+- The model's reply is just the `<Negative severity="N">...</Negative>` statements. Those go on the local blocklist with their rating, and the Hide Level decides which ones are hidden. A `faith="bad"` tag also counts against the account whose tweet contains it. That match happens in your browser, so Claude and Gemini still never see handles.
 
 ## Autonomous curation (experimental, use with care)
 
@@ -154,6 +177,7 @@ The page-filtering side of Forcefield (the ad-blocker-style hiding above) does n
 - Your API key is stored in `chrome.storage.sync`, which syncs across Chrome profiles signed into your Google account. It is sent only to the provider you chose (api.anthropic.com or generativelanguage.googleapis.com), directly from your browser.
 - Page text from allowed sites is sent to that same provider for analysis. Don't add sites whose content you don't want leaving your machine.
 - The blocklist, activity log, and spend log live in local extension storage. Nothing is sent to any server of ours; there is no server of ours.
+- On X, a small script runs in the page itself and reads copies of X's own API replies after they arrive, only to learn which accounts you follow (for the 7-day cap on good-faith mutes). It never changes or sends anything. Followed accounts, your own handle, and the good-faith ledger live in local extension storage.
 - The manifest requests broad host permissions so the blocker can run on any site you add to the allowed list.
 
 ## Known issues

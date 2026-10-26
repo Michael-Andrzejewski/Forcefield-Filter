@@ -57,6 +57,27 @@
         sliders[0].value = '9'; sliders[0].dispatchEvent(new Event('change')); await sleep(50); // a relaxed day, for the screenshot
         main.value = 'jev-latest'; main.dispatchEvent(new Event('change')); await sleep(50); // leave Jev showing for the screenshot
     }
+    if (scenario === 'haiku') {
+        // Good-faith mutes card: on by default, lists the ledger.
+        const toggle = document.getElementById('goodFaithMutesToggle');
+        const list = document.getElementById('goodFaithList');
+        check(toggle && toggle.checked, '[haiku] good-faith mutes on by default');
+        check(/No account has posted in bad faith yet/.test(list.textContent), '[haiku] empty ledger explained', list.textContent);
+        const now = Date.now();
+        __areas.local.badFaithLedger = {
+            '@crank': { since: now - 3e6, posts: [], keys: ['a', 'b', 'c'], mutes: 3, mutedAt: now - 60000, mutedUntil: now - 60000 + 4 * 3600e3, reasons: ['c'] },
+            '@pal': { since: now - 1e6, posts: [{ ts: now - 1e6, text: 'p' }], keys: ['p'], mutes: 0, mutedAt: 0, mutedUntil: 0, reasons: [] }
+        };
+        __areas.local.xFollowing = { '@pal': true };
+        renderGoodFaith(); await sleep(50);
+        const lines = list.textContent.split('\n');
+        check(lines.length === 2 && /^@crank · muted, 3h 5\dm left \(mute 3\)$/.test(lines[0]), '[haiku] muted account listed with time left', JSON.stringify(lines));
+        check(lines[1] === '@pal · 1 bad-faith post; 1 more within 30 days mutes for 1 hour · you follow them (7-day cap)', '[haiku] pending account and follow cap shown', lines[1]);
+        toggle.checked = false; toggle.dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.sync.goodFaithMutes === false, '[haiku] unticking saves off');
+        toggle.checked = true; toggle.dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.sync.goodFaithMutes === true, '[haiku] ticking saves on');
+    }
     if (scenario === 'xengine') {
         check(main.value === 'jev-latest', '[xengine] 2.8.0 "Engine on X = Jev" carries over to the dropdown', main.value);
         check(__areas.sync.selectedAiModel === 'jev-latest' && !('xEngine' in __areas.sync), '[xengine] old setting migrated and removed', JSON.stringify(__areas.sync));

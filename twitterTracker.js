@@ -161,5 +161,56 @@
         }
     }, true);
 
+    // --- For good-faith mutes (goodFaith.js) ---------------------------------
+    // Followed accounts, from xFollowWatch.js in the page world: stored under
+    // local `xFollowing` as { "@handle": true }, followed ones only, so it
+    // stays as small as the user's follow list. Batched, because one
+    // timeline load names dozens of accounts.
+    let pendingFollows = {};
+    let followTimer = null;
+    window.addEventListener('message', (e) => {
+        if (e.source !== window || !e.data || !Array.isArray(e.data.forcefieldFollows)) return;
+        for (const pair of e.data.forcefieldFollows) {
+            if (!Array.isArray(pair) || typeof pair[1] !== 'boolean' || !/^[A-Za-z0-9_]{1,50}$/.test(pair[0])) continue;
+            pendingFollows['@' + pair[0].toLowerCase()] = pair[1];
+        }
+        clearTimeout(followTimer);
+        followTimer = setTimeout(flushFollows, 2000);
+    });
+    function flushFollows() {
+        const batch = pendingFollows;
+        pendingFollows = {};
+        try { if (!chrome.runtime || !chrome.runtime.id) return; } catch (e) { return; }
+        chrome.storage.local.get(['xFollowing'], (res) => {
+            const store = Object.assign({}, res.xFollowing || {});
+            let changed = false;
+            for (const h of Object.keys(batch)) {
+                if (batch[h] && !store[h]) { store[h] = true; changed = true; }
+                else if (!batch[h] && store[h]) { delete store[h]; changed = true; }
+            }
+            if (changed) chrome.storage.local.set({ xFollowing: store });
+        });
+    }
+
+    // The user's own handle (local `xOwnHandle`), so their own posts are
+    // never judged: X's side nav links to their profile. The nav renders a
+    // little after the page, so look again for a while.
+    let ownHandle = null;
+    function rememberOwnHandle() {
+        const a = document.querySelector('a[data-testid="AppTabBar_Profile_Link"]');
+        const m = a && /^\/([A-Za-z0-9_]{1,50})$/.exec(a.getAttribute('href') || '');
+        if (!m) return false;
+        const h = '@' + m[1].toLowerCase();
+        if (h !== ownHandle) {
+            try { if (!chrome.runtime || !chrome.runtime.id) return true; } catch (e) { return true; }
+            ownHandle = h;
+            chrome.storage.local.set({ xOwnHandle: h });
+        }
+        return true;
+    }
+    let ownTries = 0;
+    const ownTimer = setInterval(() => { if (rememberOwnHandle() || ++ownTries > 40) clearInterval(ownTimer); }, 3000);
+    rememberOwnHandle();
+
     console.log('[Forcefield] Twitter activity tracker active.');
 })();

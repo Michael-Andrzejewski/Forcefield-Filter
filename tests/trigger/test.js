@@ -1,6 +1,7 @@
-// Runs the REAL triggerPageBlock from background.js with fake chrome APIs and
-// checks which allowed-post keys and which blocklist entries (by Hide level)
-// it hands to the page blocker.
+// Runs the REAL triggerPageBlock (and the good-faith mute lookup it uses)
+// from background.js with fake chrome APIs and checks which allowed-post
+// keys, which blocklist entries (by Hide level) and which muted accounts it
+// hands to the page blocker.
 // Usage: node tests/trigger/test.js [path/to/background.js]
 const fs = require('fs');
 const path = require('path');
@@ -8,13 +9,17 @@ const vm = require('vm');
 
 const src = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', '..', 'background.js'), 'utf8');
 const llmSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'llm.js'), 'utf8');
-const start = src.indexOf('async function triggerPageBlock');
-let depth = 0, end = -1;
-for (let i = src.indexOf('{', src.indexOf(')', start)); i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+const goodFaithSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'goodFaith.js'), 'utf8');
+function extract(sig) {
+    const start = src.indexOf(sig);
+    let depth = 0;
+    if (start >= 0) for (let i = src.indexOf('{', src.indexOf(')', start)); i < src.length; i++) {
+        if (src[i] === '{') depth++;
+        else if (src[i] === '}') { depth--; if (depth === 0) return src.slice(start, i + 1); }
+    }
+    console.log('trigger: could not find ' + sig); process.exit(1);
 }
-if (start < 0 || end < 0) { console.log('trigger: could not find triggerPageBlock'); process.exit(1); }
+const code = ['async function triggerPageBlock', 'async function goodFaithMutesOn', 'async function mutedForPage'].map(extract).join('\n');
 
 let pass = 0, fail = 0;
 const check = (c, name, d) => { if (c) pass++; else { fail++; console.log('  FAIL', name + (d ? ' :: ' + d : '')); } };
@@ -33,7 +38,8 @@ async function run(local, sync = {}, blockList = [{ text: 'x', level: 1 }], sess
     };
     vm.createContext(box);
     vm.runInContext(llmSrc, box); // real entriesToHide / hideThresholdFrom
-    vm.runInContext(src.slice(start, end) + '\n;globalThis.__t = triggerPageBlock;', box);
+    vm.runInContext(goodFaithSrc, box); // real activeMutes / muteNote
+    vm.runInContext(code + '\n;globalThis.__t = triggerPageBlock;', box);
     await box.__t(5, blockList, false, true);
     return calls;
 }
@@ -51,9 +57,27 @@ const sent = calls => calls[0].args[0].map(i => i.text).join('|');
         const calls = await run({});
         check(calls.length === 1, 'runs the blocker once');
         const args = calls[0].args;
-        check(args.length === 5 && Array.isArray(args[3]) && args[3].length === 0, 'no allowed posts -> empty key list', JSON.stringify(args));
+        check(args.length === 6 && Array.isArray(args[3]) && args[3].length === 0, 'no allowed posts -> empty key list', JSON.stringify(args));
         check(args[2] === true && args[1] === false, 'passes whitebox and debug flags through');
         check(args[4] === null, 'severity debug view off by default');
+        check(Array.isArray(args[5]) && args[5].length === 0, 'no ledger -> no muted accounts');
+    }
+    // Good-faith mutes.
+    {
+        const now = Date.now();
+        const entry = (mutedAt, mutedUntil, mutes) => ({ since: mutedAt - 1000, posts: [], keys: [], mutes, mutedAt, mutedUntil, reasons: [] });
+        const badFaithLedger = {
+            '@crank': entry(now - 60000, now + 3600e3, 2),
+            '@over': entry(now - 7200e3, now - 3600e3, 1),
+            '@friend': entry(now - 8 * 864e5, now + 864e5, 9),
+            '@me': entry(now - 60000, now + 3600e3, 2)
+        };
+        const local = { badFaithLedger, xFollowing: { '@friend': true }, xOwnHandle: '@Me' };
+        let muted = (await run(local))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank', 'only live mutes are sent: ended ones, followed past 7 days, and own handle left out', JSON.stringify(muted));
+        check(/^Muted by Forcefield: @crank keeps arguing in bad faith \(mute 2, (60m|1h) left\)$/.test(muted[0] && muted[0].note), 'note says who, which mute, and time left', muted[0] && muted[0].note);
+        muted = (await run(local, { goodFaithMutes: false }))[0].args[5];
+        check(muted.length === 0, 'switched off -> no muted accounts');
     }
     // Severity debug view.
     {
