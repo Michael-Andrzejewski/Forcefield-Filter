@@ -1,5 +1,5 @@
 // Provider abstraction (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL, providerForModel, callLLM)
-importScripts('llm.js', 'jev.js', 'goodFaith.js');
+importScripts('llm.js', 'jev.js', 'goodFaith.js', 'seenPosts.js');
 
 
 // AI Model Configuration now lives in llm.js (AVAILABLE_AI_MODELS, DEFAULT_AI_MODEL).
@@ -988,15 +988,24 @@ async function recordBadFaith(posts, tabId) {
 }
 
 // Accounts to box on the page right now: [{ handle, note }]. With the
-// bad-faith switch off, the user's own temporary mutes still apply.
+// bad-faith switch off, the user's own temporary mutes still apply. Then
+// accounts muted by their average score (seenPosts.js), when that switch is on.
 async function mutedForPage() {
-    const includeAuto = await goodFaithMutesOn();
-    const { badFaithLedger, xFollowing, xOwnHandle } = await chrome.storage.local.get(['badFaithLedger', 'xFollowing', 'xOwnHandle']);
+    const sync = await chrome.storage.sync.get(['goodFaithMutes', 'scoreMutes', 'scoreMuteThreshold']);
+    const includeAuto = sync.goodFaithMutes !== false;
+    const { badFaithLedger, xFollowing, xOwnHandle, accountScores } = await chrome.storage.local.get(['badFaithLedger', 'xFollowing', 'xOwnHandle', 'accountScores']);
     const now = Date.now();
     const own = normalizeHandle(xOwnHandle);
-    return activeMutes(badFaithLedger, xFollowing, now, { includeAuto })
+    const list = activeMutes(badFaithLedger, xFollowing, now, { includeAuto })
         .filter(m => m.handle !== own)
         .map(m => ({ handle: m.handle, note: muteNote(m, now) }));
+    if (sync.scoreMutes !== false) {
+        const already = new Set(list.map(m => m.handle));
+        for (const m of scoreMutedAccounts(accountScores, { threshold: sync.scoreMuteThreshold, following: xFollowing, ownHandle: xOwnHandle })) {
+            if (!already.has(m.handle)) list.push({ handle: m.handle, note: scoreMuteNote(m) });
+        }
+    }
+    return list;
 }
 
 // Temporary mute from a post's menu (twitterTracker.js). The ledger write
@@ -1031,8 +1040,161 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
     });
     // The ledger write re-applies the blocker on open pages (listener below).
     if (result.forgiven.length) console.log('[Forcefield BG] Liked, so unmuted and reset:', result.forgiven.join(', '));
+    // Scores too: posts seen before the like stop counting.
+    const oldLiked = (changes.twitterActivity.oldValue && changes.twitterActivity.oldValue.liked) || [];
+    const oldKeys = new Set(oldLiked.map(l => `${l.handle}|${l.ts}`));
+    const newLikes = liked.filter(l => !oldKeys.has(`${l.handle}|${l.ts}`));
+    if (newLikes.length) forgiveScores(newLikes).catch(e => console.warn('[Forcefield BG] Score forgiveness failed:', e));
 });
 // --- End good-faith mutes ---------------------------------------------------
+
+// --- Seen posts and account scores (rules in seenPosts.js) ------------------
+// twitterTracker.js sends every post the user scrolls past; an alarm each
+// minute has Haiku rate the unrated ones for good faith and sincerity; each
+// account's average lands in local `accountScores`, which mutedForPage reads.
+
+const seenStore = makeSeenStore();
+const SEEN_RATE_ALARM = 'forcefieldRateSeenPosts';
+const SCORE_FULL_REFRESH_MS = 24 * 3600 * 1000;
+
+async function seenPostsOn() {
+    const { recordSeenPosts } = await chrome.storage.sync.get(['recordSeenPosts']);
+    return recordSeenPosts !== false;
+}
+
+// Haiku 5.5 with an Anthropic key, else Gemini Flash-Lite with a Gemini key.
+function ratingModelFor(keys) {
+    if (keys && keys.anthropicApiKey) return 'claude-haiku-5-5';
+    if (keys && keys.geminiApiKey) return 'gemini-2.5-flash-lite';
+    return null;
+}
+
+// Account scores go through one chain, like the ledger.
+let scoreChain = Promise.resolve();
+function updateScores(fn) {
+    const run = scoreChain.then(fn);
+    scoreChain = run.catch(e => console.warn('[Forcefield BG] Account score update failed:', e));
+    return run;
+}
+
+// Re-reads these accounts (all of them when handles is null, dropping the
+// ones with nothing left in the window) into local `accountScores`. Writes
+// only when something changed, since a write re-applies the page blocker.
+function refreshAccountScores(handles) {
+    return updateScores(async () => {
+        const now = Date.now();
+        const { accountScores } = await chrome.storage.local.get(['accountScores']);
+        const before = accountScores || {};
+        let index;
+        if (handles) {
+            const accounts = await seenStore.getAccounts(handles);
+            index = Object.assign({}, before);
+            const fresh = scoreIndex(Object.values(accounts), now);
+            for (const h of handles) { if (fresh[h]) index[h] = fresh[h]; else delete index[h]; }
+        } else {
+            const all = await seenStore.allAccounts();
+            const stale = all.filter(a => !(a.posts || []).some(p => now - p.ts < ACCOUNT_WINDOW_MS)).map(a => a.handle);
+            if (stale.length) await seenStore.deleteAccounts(stale);
+            index = scoreIndex(all, now);
+            await chrome.storage.local.set({ accountScoresRefreshedAt: now });
+        }
+        if (JSON.stringify(index) !== JSON.stringify(before)) await chrome.storage.local.set({ accountScores: index });
+        return index;
+    });
+}
+
+async function forgiveScores(likes) {
+    const handles = [...new Set(likes.map(l => normalizeHandle(l.handle)).filter(Boolean))];
+    if (!handles.length) return;
+    const changed = forgiveScoredAccounts(await seenStore.getAccounts(handles), likes);
+    const list = Object.values(changed);
+    if (!list.length) return;
+    await seenStore.putAccounts(list);
+    await refreshAccountScores(list.map(a => a.handle));
+    console.log('[Forcefield BG] Liked, so older posts no longer count for:', list.map(a => a.handle).join(', '));
+}
+
+// One rating run: up to `batches` batches of the newest unrated posts.
+// Returns { rated, pending, error, reason }. Runs never overlap.
+let seenRateRun = null;
+function rateSeenPosts(opts) {
+    if (!seenRateRun) {
+        seenRateRun = rateSeenPostsOnce(opts || {}).finally(() => { seenRateRun = null; });
+    }
+    return seenRateRun;
+}
+async function rateSeenPostsOnce({ batches = RATE_BATCHES_PER_RUN } = {}) {
+    if (!(await seenPostsOn())) return { rated: 0, reason: 'off' };
+    const keys = await chrome.storage.sync.get(['anthropicApiKey', 'geminiApiKey']);
+    const model = ratingModelFor(keys);
+    if (!model) return { rated: 0, reason: 'no key' };
+    let rated = 0, error = null, ran = 0;
+    const handles = new Set();
+    for (let i = 0; i < batches; i++) {
+        const batch = await seenStore.pendingPosts(RATE_BATCH_SIZE);
+        if (!batch.length) break;
+        const { text, ids } = buildRatingRequest(batch);
+        let reply;
+        try {
+            reply = await callLLM({
+                model, system: RATING_SYSTEM_PROMPT, userText: text,
+                maxTokens: 30 * batch.length + 200,
+                anthropicApiKey: keys.anthropicApiKey, geminiApiKey: keys.geminiApiKey,
+                tweets: batch.length, spendKey: 'ratings'
+            });
+        } catch (e) {
+            error = e.message;
+            break; // budget or API trouble: the posts stay pending for the next run
+        }
+        ran++;
+        const done = await applyRatingsToStore(seenStore, batch, ids, parseRatings(reply), model, Date.now());
+        rated += done.length;
+        done.forEach(p => handles.add(p.handle));
+    }
+    if (handles.size) await refreshAccountScores([...handles]);
+    if (ran) await seenStore.trim(SEEN_MAX_POSTS);
+    const { accountScoresRefreshedAt } = await chrome.storage.local.get(['accountScoresRefreshedAt']);
+    if (Date.now() - (accountScoresRefreshedAt || 0) > SCORE_FULL_REFRESH_MS) await refreshAccountScores(null);
+    const { pending } = await seenStore.counts();
+    if (rated || error) console.log(`[Forcefield BG] Rated ${rated} seen posts with ${model}; ${pending} waiting.` + (error ? ` Stopped: ${error}` : ''));
+    return { rated, pending, error };
+}
+
+// Trims every 1000 new posts too, so the cap holds when nothing is rated
+// (no key, or over budget).
+let seenAddedSinceTrim = 0;
+async function recordSeenPosts(posts) {
+    if (!(await seenPostsOn())) return { added: 0 };
+    const added = await recordSeenPostsInStore(seenStore, posts, Date.now());
+    seenAddedSinceTrim += added;
+    if (seenAddedSinceTrim >= 1000) {
+        seenAddedSinceTrim = 0;
+        await seenStore.trim(SEEN_MAX_POSTS);
+    }
+    return { added };
+}
+
+// The alarm survives the service worker sleeping. Created only when
+// missing, so waking up doesn't push the next run back.
+chrome.alarms.get(SEEN_RATE_ALARM, (alarm) => {
+    if (!alarm || Array.isArray(alarm)) chrome.alarms.create(SEEN_RATE_ALARM, { periodInMinutes: 1 });
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm && alarm.name === SEEN_RATE_ALARM) {
+        rateSeenPosts().catch(e => console.warn('[Forcefield BG] Rating seen posts failed:', e));
+    }
+});
+
+// Whether the accounts muted by score differ between two `accountScores`.
+async function scoreMuteSetChanged(oldIndex, newIndex) {
+    const sync = await chrome.storage.sync.get(['scoreMutes', 'scoreMuteThreshold']);
+    if (sync.scoreMutes === false) return false;
+    const { xFollowing, xOwnHandle } = await chrome.storage.local.get(['xFollowing', 'xOwnHandle']);
+    const opts = { threshold: sync.scoreMuteThreshold, following: xFollowing, ownHandle: xOwnHandle };
+    const key = idx => scoreMutedAccounts(idx, opts).map(m => `${m.handle}:${m.score}:${m.n}`).sort().join(',');
+    return key(oldIndex || {}) !== key(newIndex || {});
+}
+// --- End seen posts ----------------------------------------------------------
 
 // Modified addSuggestedWords for background context
 async function addSuggestedWords(suggestions, defaultLevelOverride = null, source = 'ai_continuous', tabIdForContext) {
@@ -1277,7 +1439,12 @@ chrome.storage.onChanged.addListener(async (changes, area) => {
 chrome.storage.onChanged.addListener(async (changes, area) => {
     const levelMoved = area === 'sync' && changes.hideThreshold;
     const debugSwitched = area === 'local' && changes.severityDebug;
-    const mutesChanged = (area === 'local' && changes.badFaithLedger) || (area === 'sync' && changes.goodFaithMutes);
+    let mutesChanged = (area === 'local' && changes.badFaithLedger) ||
+        (area === 'sync' && (changes.goodFaithMutes || changes.scoreMutes || changes.scoreMuteThreshold));
+    // New scores only matter when they change who is muted.
+    if (!mutesChanged && area === 'local' && changes.accountScores) {
+        mutesChanged = await scoreMuteSetChanged(changes.accountScores.oldValue, changes.accountScores.newValue);
+    }
     if (!levelMoved && !debugSwitched && !mutesChanged) return;
     const { blockList, debugMode, whiteboxMode } = await chrome.storage.local.get(['blockList', 'debugMode', 'whiteboxMode']);
     // Mutes switched off or ended: still run once, so their boxes come off.
@@ -1364,6 +1531,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse(await tempMuteOffer(request.handle));
         } else if (request.command === "tempMute") {
             sendResponse(await tempMuteFromMenu(request.handle));
+        } else if (request.command === "recordSeenPosts") {
+            sendResponse(await recordSeenPosts(request.posts || []));
+        } else if (request.command === "rateSeenPostsNow") {
+            sendResponse(await rateSeenPosts());
         } else if (request.command === "autonomousGetConfig") {
             sendResponse({ config: AUTONOMOUS_DEFAULTS });
         } else if (request.command === "autonomousDecide") {

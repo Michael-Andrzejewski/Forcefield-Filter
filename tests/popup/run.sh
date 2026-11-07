@@ -7,12 +7,13 @@ ROOT="$(cygpath -m "$D/../.." 2>/dev/null || echo "$D/../..")"
 CHROME="${CHROME:-/c/Program Files/Google/Chrome/Application/chrome.exe}"
 mkdir -p "$D/out"
 status=0
-for sc in haiku xengine xengine-llm jev; do
+for sc in haiku xengine xengine-llm jev scores; do
   case $sc in
     haiku) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5"},"local":{"blockList":[{"text":"mild snark","level":8,"source":"ai_continuous","severity":2},{"text":"partisan dunk","level":8,"source":"jev","severity":6},{"text":"typed by hand","level":8,"source":"manual"}],"aiSpendTotals":{"since":1790800000000,"models":{"claude-haiku-4-5":{"cost":0.31,"calls":42,"tweetCost":0.31,"tweets":610},"jev-latest":{"cost":0.0021,"calls":30,"tweetCost":0.0021,"tweets":700}}}}}' ;;
     xengine) seed='{"sync":{"selectedAiModel":"claude-haiku-4-5","xEngine":"jev"},"local":{}}' ;;
     xengine-llm) seed='{"sync":{"selectedAiModel":"claude-sonnet-4-6","xEngine":"llm"},"local":{}}' ;;
     jev) seed='{"sync":{"selectedAiModel":"jev-latest","hideThreshold":9},"local":{"severityDebug":true}}' ;;
+    scores) seed='{"sync":{"scoreMuteThreshold":4.5},"local":{"xOwnHandle":"@me","xFollowing":{"@pal":true},"accountScores":{"@kind":[8.2,20],"@troll":[2.9,12],"@me":[7.8,34],"@pal":[3.5,8],"@meh":[4.5,6]}}}' ;;
   esac
   node -e '
     const fs=require("fs"); const [root, out, seed, sc, dir]=process.argv.slice(1);
@@ -23,6 +24,7 @@ for sc in haiku xengine xengine-llm jev; do
     fs.writeFileSync(out, h);
   ' "$ROOT" "$D/out/popup_$sc.html" "$seed" "$sc" "$W"
   "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$W/out/profile" --allow-file-access-from-files --virtual-time-budget=5000 --dump-dom "file:///$W/out/popup_$sc.html" 2>/dev/null > "$D/out/dom_$sc.html"
+  [ $sc = scores ] && "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$W/out/profile" --allow-file-access-from-files --virtual-time-budget=5000 --window-size=420,2400 --screenshot="$W/out/popup_scores.png" "file:///$W/out/popup_$sc.html" >/dev/null 2>&1
   [ $sc = haiku ] && "$CHROME" --headless=new --disable-gpu --no-first-run --user-data-dir="$W/out/profile" --allow-file-access-from-files --virtual-time-budget=5000 --window-size=420,900 --screenshot="$W/out/popup_haiku.png" "file:///$W/out/popup_$sc.html" >/dev/null 2>&1
   node -e '
     const h=require("fs").readFileSync(process.argv[1],"utf8");

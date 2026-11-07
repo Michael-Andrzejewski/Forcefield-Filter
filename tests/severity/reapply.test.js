@@ -1,4 +1,4 @@
-// Boots the whole service worker (llm.js + jev.js + goodFaith.js + background.js, as
+// Boots the whole service worker (llm.js + jev.js + goodFaith.js + seenPosts.js + background.js, as
 // importScripts would) against a fake chrome, then moves the Hide level and
 // checks that every open allowed page is re-blocked with the right entries.
 // Usage: node tests/severity/reapply.test.js
@@ -63,7 +63,7 @@ const box = {
     setTimeout, clearTimeout, setInterval, clearInterval, URL, Promise, JSON, Date, Math
 };
 vm.createContext(box);
-for (const f of ['llm.js', 'jev.js', 'goodFaith.js', 'background.js']) {
+for (const f of ['llm.js', 'jev.js', 'goodFaith.js', 'seenPosts.js', 'background.js']) {
     try { vm.runInContext(fs.readFileSync(path.join(root, f), 'utf8'), box, { filename: f }); }
     catch (e) { check(false, `${f} loads without throwing`, e.stack.split('\n').slice(0, 3).join(' | ')); }
 }

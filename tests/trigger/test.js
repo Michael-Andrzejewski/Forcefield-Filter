@@ -10,6 +10,7 @@ const vm = require('vm');
 const src = fs.readFileSync(process.argv[2] || path.join(__dirname, '..', '..', 'background.js'), 'utf8');
 const llmSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'llm.js'), 'utf8');
 const goodFaithSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'goodFaith.js'), 'utf8');
+const seenPostsSrc = fs.readFileSync(path.join(__dirname, '..', '..', 'seenPosts.js'), 'utf8');
 function extract(sig) {
     const start = src.indexOf(sig);
     let depth = 0;
@@ -39,6 +40,7 @@ async function run(local, sync = {}, blockList = [{ text: 'x', level: 1 }], sess
     vm.createContext(box);
     vm.runInContext(llmSrc, box); // real entriesToHide / hideThresholdFrom
     vm.runInContext(goodFaithSrc, box); // real activeMutes / muteNote
+    vm.runInContext(seenPostsSrc, box); // real scoreMutedAccounts / scoreMuteNote
     vm.runInContext(code + '\n;globalThis.__t = triggerPageBlock;', box);
     await box.__t(5, blockList, false, true);
     return calls;
@@ -78,6 +80,26 @@ const sent = calls => calls[0].args[0].map(i => i.text).join('|');
         check(/^Muted by Forcefield: @crank keeps arguing in bad faith \(mute 2, (60m|1h) left\)$/.test(muted[0] && muted[0].note), 'note says who, which mute, and time left', muted[0] && muted[0].note);
         muted = (await run(local, { goodFaithMutes: false }))[0].args[5];
         check(muted.length === 0, 'switched off -> no muted accounts');
+    }
+    // Score mutes (seenPosts.js): local accountScores { "@h": [score, n] }.
+    {
+        const now = Date.now();
+        const accountScores = { '@troll': [3.2, 14], '@meh': [4.5, 9], '@friend': [2.5, 20], '@me': [1.5, 6], '@crank': [2.0, 8] };
+        const badFaithLedger = { '@crank': { since: now - 61000, posts: [], keys: [], mutes: 1, mutedAt: now - 60000, mutedUntil: now + 3600e3, reasons: [] } };
+        const local = { accountScores, badFaithLedger, xFollowing: { '@friend': true }, xOwnHandle: '@Me' };
+        let muted = (await run(local))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank,@troll', 'default level 4: the 3.2 is muted, the 4.5 is not; followed and own left out; the ledger mute comes first', JSON.stringify(muted));
+        const troll = muted.find(m => m.handle === '@troll');
+        check(troll && troll.note === 'Muted by Forcefield: @troll averages 3.2/10 for good faith and sincerity over 14 posts', 'score note says who, the score and how many posts', troll && troll.note);
+        check(/keeps arguing in bad faith/.test(muted[0].note), 'an account muted both ways shows the ledger note once', JSON.stringify(muted));
+        muted = (await run(local, { scoreMuteThreshold: 5 }))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank,@troll,@meh', 'level 5 also mutes the 4.5', JSON.stringify(muted));
+        muted = (await run(local, { scoreMuteThreshold: 2 }))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank', 'level 2 mutes neither score account', JSON.stringify(muted));
+        muted = (await run(local, { scoreMutes: false }))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank', 'score switch off -> only the ledger mute', JSON.stringify(muted));
+        muted = (await run(local, { goodFaithMutes: false }))[0].args[5];
+        check(muted.map(m => m.handle).join() === '@crank,@troll' && muted.every(m => /averages/.test(m.note)), 'ledger switch off -> score mutes still apply, lowest first, with score notes', JSON.stringify(muted));
     }
     // Severity debug view.
     {

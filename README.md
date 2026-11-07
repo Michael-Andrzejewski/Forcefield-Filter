@@ -94,6 +94,23 @@ Forcefield adds **Temporary mute @handle** to X's own ⋯ menu on every post (an
 
 The menu item shows which length you'll get. Their posts are boxed as `Temporarily muted by you: @handle (6d 23h left)`. A temporary mute works even with the bad-faith switch off, has no 7-day cap for accounts you follow, and is logged as a mute for your taste profile. Liking one of their posts ends it early; the 30-day window then counts from that like.
 
+## Account scores
+
+The good-faith mutes above only look at posts a scan already flagged. Account scores look at everything: Forcefield records every post you scroll past on X and rates each one, then judges accounts by their average instead of by their worst posts.
+
+1. **Recording.** A post counts as seen once at least half of it is on screen (or it fills half the window). Forcefield keeps the author, text, quoted post, the account it replies to, who reposted it, the page it was on, and when you saw it. Posts stay in the extension's own IndexedDB on your computer, up to 100,000; past that, the ones seen longest ago go first. Posts boxed by Forcefield are still recorded, so a muted account's new posts keep counting.
+2. **Rating.** Once a minute, up to 5 batches of 40 unrated posts go to Claude Haiku 5.5 (or Gemini 2.5 Flash-Lite if you only have a Gemini key), whatever model you scan with. Posts seen on the same page go together, top to bottom, so a reply is rated next to what it answers. Each post gets two scores from 1 to 10:
+   - **Good faith**: does the author engage honestly with people and ideas? Low for strawmanning, mockery in place of an argument, insults, baiting, misleading. High for fair disagreement, real questions, admitting error.
+   - **Sincerity**: does the author mean it, and say it for its own sake? Low for engagement bait, rage farming, performative outrage, empty hype, grift. High for real opinions, real news, honest humor, candor.
+
+   Being wrong, blunt, angry or disagreeing is not low on either scale by itself. Rating costs about $0.02 per 1,000 posts with Haiku 5.5 and counts toward the same hourly and daily budget as scans. The popup lists it as "post ratings", apart from scan costs.
+3. **Scoring.** An account's score is the average of (good faith + sincerity) / 2 over its 50 most recent rated posts from the last 90 days, pulled toward 7 as if it had 3 more ordinary posts. One bad post barely moves an account; a pattern does. Accounts need 5 rated posts before they get a score.
+4. **Muting.** An account scoring at or below the level you pick (default 4, from 1 to 7) is boxed: `Muted by Forcefield: @handle averages 3.2/10 for good faith and sincerity over 14 posts`. The mute lasts as long as the score stays low, so it lifts by itself if their newer posts are better. Accounts you follow and your own account are never muted by score.
+
+**Liking one of their posts forgives them**: posts you saw before the like stop counting, and the score starts again from their next posts.
+
+The popup's **Account Scores** card has the two switches (recording and rating; muting by score), the level slider, how many posts are recorded and waiting, **Rate now**, **Export** (every recorded post with its scores, as JSON), and the accounts by score, lowest first, with your own score on top.
+
 ## Cost
 
 Scanning sends text to a paid API, so browsing costs real money (roughly cents per session with Haiku on tweet-only mode). Forcefield ships with a budget guard: spending is tracked from each response's token usage, and calls pause automatically at $1/hour or $2/day by default. Both limits are adjustable under **AI Budget** in Developer mode.
@@ -190,6 +207,7 @@ The page-filtering side of Forcefield (the ad-blocker-style hiding above) does n
 - Page text from allowed sites is sent to that same provider for analysis. Don't add sites whose content you don't want leaving your machine.
 - The blocklist, activity log, and spend log live in local extension storage. Nothing is sent to any server of ours; there is no server of ours.
 - On X, a small script runs in the page itself and reads copies of X's own API replies after they arrive, only to learn which accounts you follow (for the 7-day cap on good-faith mutes). It never changes or sends anything. Followed accounts, your own handle, and the good-faith ledger live in local extension storage.
+- With account scores on (the default), every post you scroll past on X is stored in the extension's IndexedDB and its text is sent to your AI provider for rating. Turn off **Record and rate posts I see on X** to stop both. The `unlimitedStorage` permission lets the post store grow past the usual 10 MB.
 - The manifest requests broad host permissions so the blocker can run on any site you add to the allowed list.
 
 ## Known issues

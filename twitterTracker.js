@@ -273,5 +273,144 @@
     const ownTimer = setInterval(() => { if (rememberOwnHandle() || ++ownTries > 40) clearInterval(ownTimer); }, 3000);
     rememberOwnHandle();
 
+    // --- Seen posts (rules in seenPosts.js) ----------------------------------
+    // Each post that is at least half on screen (or fills half the window) is
+    // sent to the background once per page load, in batches every 2 seconds
+    // (command `recordSeenPosts`). A post seen again with longer text, after
+    // "Show more", is sent again. Switch: sync `recordSeenPosts`, on by
+    // default. Posts boxed by Forcefield are still recorded, so a muted
+    // account's newer posts keep counting toward its score.
+    let recordOn = true;
+    try {
+        chrome.storage.sync.get(['recordSeenPosts'], (r) => { recordOn = !r || r.recordSeenPosts !== false; });
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area === 'sync' && changes.recordSeenPosts) recordOn = changes.recordSeenPosts.newValue !== false;
+        });
+    } catch (e) { /* orphaned */ }
+
+    const sentSeen = new Set();   // id or handle+text, plus text length
+    const observedArticles = new WeakSet();
+    const queuedLength = new WeakMap(); // article -> textContent length when last sent
+    let seenQueue = [];
+    let seenTimer = null;
+
+    function handleIn(el) {
+        const line = (el.innerText || '').split('\n').map(s => s.trim()).find(l => l.startsWith('@'));
+        const m = /@([A-Za-z0-9_]{1,50})/.exec(line || el.textContent || '');
+        return m ? '@' + m[1] : '';
+    }
+
+    // What a post says and who wrote it. The quoted post, a role="link" block
+    // with its own name block, is kept apart from the author's own text.
+    function seenPostInfo(article) {
+        let quoteEl = null;
+        for (const link of article.querySelectorAll('div[role="link"]')) {
+            if (link.querySelector('[data-testid="User-Name"]')) { quoteEl = link; break; }
+        }
+        const inQuote = el => !!(quoteEl && quoteEl.contains(el));
+        const nameEl = [...article.querySelectorAll('[data-testid="User-Name"]')].find(el => !inQuote(el));
+        if (!nameEl) return null;
+        const handle = handleIn(nameEl);
+        if (!handle) return null;
+        const name = (nameEl.innerText || '').split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+        const textEl = [...article.querySelectorAll('[data-testid="tweetText"]')].find(el => !inQuote(el));
+        const timeEl = [...article.querySelectorAll('a[href*="/status/"] time')].find(el => !inQuote(el));
+        const link = timeEl && timeEl.closest('a');
+        const idm = link && /\/status\/(\d+)/.exec(link.getAttribute('href') || '');
+        const info = {
+            id: idm ? idm[1] : '',
+            handle,
+            name,
+            text: textEl ? (textEl.innerText || '').trim() : '',
+            time: (timeEl && timeEl.getAttribute('datetime')) || '',
+            page: location.pathname
+        };
+        if (quoteEl) {
+            const qName = quoteEl.querySelector('[data-testid="User-Name"]');
+            const qText = quoteEl.querySelector('[data-testid="tweetText"]');
+            info.quote = { handle: qName ? handleIn(qName) : '', text: qText ? (qText.innerText || '').trim() : '' };
+        }
+        // "Replying to @a @b": @-links outside the name, text and quote, under
+        // a block that starts with those words.
+        if ((article.textContent || '').includes('Replying to')) {
+            const replyTo = [];
+            for (const a of article.querySelectorAll('a[href^="/"]')) {
+                if (nameEl.contains(a) || (textEl && textEl.contains(a)) || inQuote(a)) continue;
+                const t = (a.textContent || '').trim();
+                if (!/^@[A-Za-z0-9_]{1,50}$/.test(t)) continue;
+                let node = a.parentElement, ok = false;
+                for (let i = 0; node && node !== article && i < 4; i++, node = node.parentElement) {
+                    if (/^\s*Replying to\b/.test(node.textContent || '')) { ok = true; break; }
+                }
+                if (ok) replyTo.push(t);
+            }
+            if (replyTo.length) info.replyTo = replyTo;
+        }
+        const social = article.querySelector('[data-testid="socialContext"]');
+        const socialLink = social && social.closest('a');
+        const rm = socialLink && /^\/([A-Za-z0-9_]{1,50})$/.exec(socialLink.getAttribute('href') || '');
+        if (rm && /repost|retweet/i.test(social.textContent || '')) info.repostedBy = '@' + rm[1];
+        return info;
+    }
+
+    function queueSeen(article, rectTop) {
+        if (!recordOn) return;
+        queuedLength.set(article, (article.textContent || '').length);
+        const info = seenPostInfo(article);
+        if (!info || (!info.text && !info.quote)) return;
+        const k = (info.id || `${info.handle}|${info.text.slice(0, 120)}`) + ':' + info.text.length;
+        if (sentSeen.has(k)) return;
+        sentSeen.add(k);
+        info.y = Math.round(rectTop + window.scrollY);
+        seenQueue.push(info);
+        if (!seenTimer) seenTimer = setTimeout(flushSeen, 2000);
+    }
+
+    function flushSeen() {
+        seenTimer = null;
+        const posts = seenQueue.splice(0, 200);
+        if (seenQueue.length) seenTimer = setTimeout(flushSeen, 2000);
+        if (!posts.length) return;
+        try { if (!chrome.runtime || !chrome.runtime.id) return; } catch (e) { return; }
+        try {
+            chrome.runtime.sendMessage({ command: 'recordSeenPosts', posts }, () => { void chrome.runtime.lastError; });
+        } catch (e) { /* orphaned */ }
+    }
+
+    if (typeof IntersectionObserver !== 'function' || typeof MutationObserver !== 'function') return; // not a real page
+    const seenObserver = new IntersectionObserver((entries) => {
+        for (const e of entries) {
+            if (!e.isIntersecting) continue;
+            const half = e.intersectionRatio >= 0.5 || e.intersectionRect.height >= window.innerHeight * 0.5;
+            if (half) queueSeen(e.target, e.boundingClientRect.top);
+        }
+    }, { threshold: [0, 0.25, 0.5, 0.75, 1] });
+
+    function observeArticles() {
+        for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
+            if (observedArticles.has(article)) continue;
+            observedArticles.add(article);
+            seenObserver.observe(article);
+        }
+    }
+    // A visible article whose content changed since it was sent (its text
+    // grew after "Show more", or X reused it for another post) is looked at
+    // again; an unchanged post is skipped by sentSeen.
+    function recheckVisible() {
+        for (const article of document.querySelectorAll('article[data-testid="tweet"]')) {
+            const len = queuedLength.get(article);
+            if (len === undefined || len === (article.textContent || '').length) continue;
+            const r = article.getBoundingClientRect();
+            const visible = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 0);
+            if (r.height > 0 && (visible >= r.height * 0.5 || visible >= window.innerHeight * 0.5)) queueSeen(article, r.top);
+        }
+    }
+    let articleTimer = null;
+    new MutationObserver(() => {
+        if (articleTimer) return;
+        articleTimer = setTimeout(() => { articleTimer = null; observeArticles(); recheckVisible(); }, 300);
+    }).observe(document, { childList: true, subtree: true });
+    observeArticles();
+
     console.log('[Forcefield] Twitter activity tracker active.');
 })();

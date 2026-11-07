@@ -119,6 +119,111 @@ if (goodFaithToggle) {
     });
 }
 
+// Account scores (seenPosts.js): the record switch (sync `recordSeenPosts`),
+// the score-mute switch and level (sync `scoreMutes`, `scoreMuteThreshold`),
+// counts from the seen-posts store, and accounts by score (local
+// `accountScores`), lowest first. The user's own score goes on top.
+const recordSeenToggle = document.getElementById('recordSeenPostsToggle');
+const scoreMutesToggle = document.getElementById('scoreMutesToggle');
+const scoreThresholdInput = document.getElementById('scoreMuteThreshold');
+const scoreThresholdValue = document.getElementById('scoreMuteThresholdValue');
+const rateSeenButton = document.getElementById('rateSeenPostsButton');
+const exportSeenButton = document.getElementById('exportSeenPostsButton');
+let popupSeenStore = null;
+function seenStoreForPopup() {
+    return popupSeenStore || (popupSeenStore = makeSeenStore());
+}
+function showScoreThreshold(t) {
+    if (scoreThresholdInput) scoreThresholdInput.value = t;
+    if (scoreThresholdValue) scoreThresholdValue.textContent = t.toFixed(1);
+}
+async function renderSeenCounts(extra) {
+    const el = document.getElementById('seenPostsCounts');
+    if (!el) return;
+    try {
+        const { total, pending } = await seenStoreForPopup().counts();
+        el.textContent = `Recorded ${total.toLocaleString()} posts · ${pending.toLocaleString()} waiting to be rated` + (extra ? ` · ${extra}` : '');
+    } catch (e) {
+        el.textContent = extra || '';
+    }
+}
+function renderAccountScores() {
+    chrome.storage.sync.get(['recordSeenPosts', 'scoreMutes', 'scoreMuteThreshold'], (s) => {
+        if (recordSeenToggle) recordSeenToggle.checked = s.recordSeenPosts !== false;
+        if (scoreMutesToggle) scoreMutesToggle.checked = s.scoreMutes !== false;
+        const t = scoreThresholdFrom(s.scoreMuteThreshold);
+        showScoreThreshold(t);
+        chrome.storage.local.get(['accountScores', 'xFollowing', 'xOwnHandle'], (r) => {
+            const list = document.getElementById('accountScoresList');
+            if (!list) return;
+            const idx = r.accountScores || {};
+            const own = normalizeHandle(r.xOwnHandle);
+            const following = r.xFollowing || {};
+            const muted = new Set(s.scoreMutes === false ? [] :
+                scoreMutedAccounts(idx, { threshold: t, following, ownHandle: r.xOwnHandle }).map(m => m.handle));
+            const line = (h, label) => {
+                const [score, n] = idx[h];
+                const tags = [];
+                if (muted.has(h)) tags.push('muted');
+                if (h !== own && following[h] === true) tags.push('you follow them');
+                return `${label || h} · ${score.toFixed(1)} over ${n} posts${tags.length ? ' · ' + tags.join(' · ') : ''}`;
+            };
+            const others = Object.keys(idx).filter(h => h !== own)
+                .sort((a, b) => idx[a][0] - idx[b][0] || idx[b][1] - idx[a][1]);
+            const lines = [];
+            if (own && idx[own]) lines.push(line(own, `You (${own})`));
+            lines.push(...others.slice(0, 50).map(h => line(h)));
+            list.textContent = lines.length ? lines.join('\n') : 'No account scores yet.';
+        });
+    });
+    renderSeenCounts();
+}
+if (recordSeenToggle) {
+    recordSeenToggle.addEventListener('change', () => chrome.storage.sync.set({ recordSeenPosts: recordSeenToggle.checked }));
+}
+if (scoreMutesToggle) {
+    scoreMutesToggle.addEventListener('change', () => chrome.storage.sync.set({ scoreMutes: scoreMutesToggle.checked }));
+}
+if (scoreThresholdInput) {
+    // While dragging: update the number only. On release: save.
+    scoreThresholdInput.addEventListener('input', () => showScoreThreshold(scoreThresholdFrom(scoreThresholdInput.value)));
+    scoreThresholdInput.addEventListener('change', () => {
+        const t = scoreThresholdFrom(scoreThresholdInput.value);
+        showScoreThreshold(t);
+        chrome.storage.sync.set({ scoreMuteThreshold: t });
+    });
+}
+if (rateSeenButton) {
+    rateSeenButton.addEventListener('click', () => {
+        rateSeenButton.disabled = true;
+        rateSeenButton.textContent = 'Rating…';
+        chrome.runtime.sendMessage({ command: 'rateSeenPostsNow' }, (res) => {
+            void chrome.runtime.lastError;
+            rateSeenButton.disabled = false;
+            rateSeenButton.textContent = 'Rate now';
+            let note = '';
+            if (res && res.reason === 'no key') note = 'Add an Anthropic or Gemini API key to rate posts';
+            else if (res && res.reason === 'off') note = 'Recording is off';
+            else if (res && res.error) note = `Rated ${res.rated}, then stopped: ${res.error}`;
+            else if (res && typeof res.rated === 'number') note = `Rated ${res.rated}`;
+            renderSeenCounts(note);
+        });
+    });
+}
+if (exportSeenButton) {
+    exportSeenButton.addEventListener('click', async () => {
+        const posts = await seenStoreForPopup().allPosts();
+        const { accountScores } = await chrome.storage.local.get(['accountScores']);
+        const body = JSON.stringify({ exportedAt: new Date().toISOString(), accountScores: accountScores || {}, posts }, null, 1);
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([body], { type: 'application/json' }));
+        a.download = `forcefield-seen-posts-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    });
+}
+
 function updateJevSettingsVisibility(selectedModel) {
     document.querySelectorAll('.jev-settings').forEach(box => {
         box.style.display = selectedModel === JEV_MODEL_ID ? '' : 'none';
@@ -139,6 +244,7 @@ document.addEventListener('DOMContentLoaded', () => {
     loadHideThreshold();
     loadSeverityDebug();
     renderGoodFaith(); // Good-faith mutes: switch + muted accounts
+    renderAccountScores(); // Seen posts: switches, counts, accounts by score
     loadAllowedSites(); // Load the list of allowed sites
     loadScanningState(); // Load and set initial scanning state
     loadDebugModeState(); // Added
@@ -500,6 +606,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
     }
     if ((area === 'local' && (changes.badFaithLedger || changes.xFollowing)) || (area === 'sync' && changes.goodFaithMutes)) {
         renderGoodFaith();
+    }
+    if ((area === 'local' && (changes.accountScores || changes.xFollowing || changes.xOwnHandle)) ||
+        (area === 'sync' && (changes.recordSeenPosts || changes.scoreMutes || changes.scoreMuteThreshold))) {
+        renderAccountScores();
     }
 });
 

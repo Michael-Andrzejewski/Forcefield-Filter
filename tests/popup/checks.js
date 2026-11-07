@@ -86,6 +86,44 @@
         check(__areas.sync.goodFaithMutes === true, '[haiku] ticking saves on');
         renderGoodFaith(); await sleep(50);
     }
+    if (scenario === 'scores') {
+        // Account Scores card (seenPosts.js).
+        const rec = document.getElementById('recordSeenPostsToggle');
+        const mutes = document.getElementById('scoreMutesToggle');
+        const slider = document.getElementById('scoreMuteThreshold');
+        const value = document.getElementById('scoreMuteThresholdValue');
+        const list = document.getElementById('accountScoresList');
+        check(rec && rec.checked && mutes && mutes.checked, '[scores] both switches on by default');
+        check(slider && slider.min === '1' && slider.max === '7' && slider.step === '0.5' && slider.value === '4.5' && value.textContent === '4.5', '[scores] saved level 4.5 shown', slider && slider.value + ' ' + value.textContent);
+        let lines = list.textContent.split('\n');
+        check(lines[0] === 'You (@me) · 7.8 over 34 posts', '[scores] own score on top', lines[0]);
+        check(lines[1] === '@troll · 2.9 over 12 posts · muted', '[scores] lowest first, marked muted', lines[1]);
+        check(lines[2] === '@pal · 3.5 over 8 posts · you follow them', '[scores] followed account is never muted', lines[2]);
+        check(lines[3] === '@meh · 4.5 over 6 posts · muted' && lines[4] === '@kind · 8.2 over 20 posts' && lines.length === 5, '[scores] at the level is muted; high score plain', JSON.stringify(lines));
+        slider.value = '3'; slider.dispatchEvent(new Event('input')); await sleep(20);
+        check(value.textContent === '3.0' && __areas.sync.scoreMuteThreshold === 4.5, '[scores] dragging updates the number only');
+        slider.dispatchEvent(new Event('change')); await sleep(50);
+        check(__areas.sync.scoreMuteThreshold === 3, '[scores] releasing saves the level', String(__areas.sync.scoreMuteThreshold));
+        renderAccountScores(); await sleep(50);
+        lines = list.textContent.split('\n');
+        check(lines[1].endsWith('· muted') && !lines[3].includes('muted'), '[scores] level 3: the 2.9 stays muted, the 4.5 is not', JSON.stringify(lines));
+        mutes.checked = false; mutes.dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.sync.scoreMutes === false, '[scores] unticking score mutes saves off');
+        renderAccountScores(); await sleep(50);
+        check(!list.textContent.includes('muted'), '[scores] switched off: nobody marked muted', list.textContent);
+        rec.checked = false; rec.dispatchEvent(new Event('change')); await sleep(20);
+        check(__areas.sync.recordSeenPosts === false, '[scores] unticking recording saves off');
+        const rate = document.getElementById('rateSeenPostsButton');
+        rate.click(); await sleep(50);
+        check(rate.textContent === 'Rate now' && !rate.disabled && !/undefined/.test(document.getElementById('seenPostsCounts').textContent), '[scores] Rate now with no answer leaves no junk', document.getElementById('seenPostsCounts').textContent);
+        check(document.getElementById('exportSeenPostsButton'), '[scores] Export button present');
+        // Back on, at 4.5, for the screenshot.
+        rec.checked = true; rec.dispatchEvent(new Event('change'));
+        mutes.checked = true; mutes.dispatchEvent(new Event('change'));
+        slider.value = '4.5'; slider.dispatchEvent(new Event('change')); await sleep(50);
+        renderAccountScores(); await sleep(50);
+        document.getElementById('accountScoresList').scrollIntoView();
+    }
     if (scenario === 'xengine') {
         check(main.value === 'jev-latest', '[xengine] 2.8.0 "Engine on X = Jev" carries over to the dropdown', main.value);
         check(__areas.sync.selectedAiModel === 'jev-latest' && !('xEngine' in __areas.sync), '[xengine] old setting migrated and removed', JSON.stringify(__areas.sync));

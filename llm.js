@@ -148,7 +148,10 @@ async function enforceBudget() {
 
 // `tweets`: how many tweets the call covered (0 when unknown, e.g. a page
 // that isn't X). Recorded so models can be compared per 100 tweets.
-async function recordSpend(model, usage, tweets = 0) {
+// `spendKey`: where the running totals go, when not under the model itself
+// (seen-post ratings go under "<model>:ratings", so they don't change the
+// model's per-100-tweets scan cost).
+async function recordSpend(model, usage, tweets = 0, spendKey = '') {
     const pricing = MODEL_PRICING[model];
     if (!pricing || !usage) return;
     const effectiveInputTokens =
@@ -162,7 +165,8 @@ async function recordSpend(model, usage, tweets = 0) {
     // budget) these never age out, so the comparison builds up over days.
     const { aiSpendTotals } = await chrome.storage.local.get(['aiSpendTotals']);
     const totals = aiSpendTotals || { since: Date.now(), models: {} };
-    const t = totals.models[model] || (totals.models[model] = { cost: 0, calls: 0, tweetCost: 0, tweets: 0 });
+    const key = spendKey || model;
+    const t = totals.models[key] || (totals.models[key] = { cost: 0, calls: 0, tweetCost: 0, tweets: 0 });
     t.cost += cost;
     t.calls += 1;
     if (tweets > 0) { t.tweetCost += cost; t.tweets += tweets; }
@@ -173,7 +177,8 @@ async function recordSpend(model, usage, tweets = 0) {
 // "Jev by TypeSafe: $0.0012 over 3 calls · $0.0004 per 100 tweets (300 tweets)"
 function formatSpendByModel(totals) {
     const models = (totals && totals.models) || {};
-    const label = id => SELECTABLE_AI_MODELS[id] ? SELECTABLE_AI_MODELS[id].replace(/\s*\(.*\)$/, '') : id;
+    const modelLabel = id => SELECTABLE_AI_MODELS[id] ? SELECTABLE_AI_MODELS[id].replace(/\s*\(.*\)$/, '') : id;
+    const label = id => /:ratings$/.test(id) ? modelLabel(id.replace(/:ratings$/, '')) + ' post ratings' : modelLabel(id);
     // Two significant digits below 10 cents ($0.0003, $0.0021, $0.05), never
     // scientific notation.
     const money = v => '$' + (v >= 0.1 ? v.toFixed(2) : v <= 0 ? '0'
@@ -195,7 +200,7 @@ function providerForModel(model) {
 
 // Returns the model's raw text output as a string. Throws on a missing key or a
 // non-OK HTTP response (callers already wrap these in try/catch).
-async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false, tweets = 0 }) {
+async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApiKey, geminiApiKey, cacheSystem = false, tweets = 0, spendKey = '' }) {
     // Guard against a stale/retired model id lingering in storage (e.g. an old
     // claude-3-* selection from before the model list was modernized).
     if (model === JEV_MODEL_ID) {
@@ -219,7 +224,7 @@ async function callLLM({ model, system, userText, maxTokens = 4096, anthropicApi
     }
     // Record actual spend from the response's usage metadata (fire-and-forget;
     // a failed write should never fail the call itself).
-    recordSpend(model, result.usage, tweets).catch(e => console.warn("[Forcefield] Failed to record AI spend:", e));
+    recordSpend(model, result.usage, tweets, spendKey ? `${model}:${spendKey}` : '').catch(e => console.warn("[Forcefield] Failed to record AI spend:", e));
     return result.text;
 }
 
